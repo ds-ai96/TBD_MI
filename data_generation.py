@@ -95,7 +95,7 @@ def get_args_parser():
         "--prune_ratio",
         nargs='+',
         type=float,
-        default=0,
+        default=[0],
         help='the proportion of patches to be pruned relative to the current remaining patches; 0: to densely invert data; r1 r2 ... rn: progressively stopping the inversion of a fraction (r1, r2, ..., rn)$$ of patches at iterations (t1, t2, ..., tn), respectively'
     )
 
