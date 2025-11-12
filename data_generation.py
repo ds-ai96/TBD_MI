@@ -218,6 +218,7 @@ def main():
             img_tag = f"{args.mode}-{iterations}-{str(prune_it)}-{str(prune_ratio)}-{str(args.seed)}-{str(args.synthetic_bs*args.num_runs)}"
         else:
             raise NotImplementedError
+
         datapool_path=os.path.join(args.datapool, f"{args.model}/{img_tag}") # The path to store inverted data
         if os.path.exists(datapool_path):
             shutil.rmtree(datapool_path)
