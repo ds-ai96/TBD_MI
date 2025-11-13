@@ -216,7 +216,7 @@ class TBD_MI(BaseSynthesis):
         x = self._coord_x - cx
         rad2 = (y*y + x*x) / self._norm_denom
 
-        return rad2
+        return rad2.expand(B, 1, H, W)
 
     def _saliency_p(self, x, targets, current_abs_index, next_relative_index):
         """
