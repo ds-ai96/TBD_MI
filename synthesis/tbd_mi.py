@@ -1,15 +1,44 @@
 import time
+import random
+import math
 from math import sqrt
+
 import numpy as np
+from tqdm import tqdm
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import random
+
 import torchvision
-from tqdm import tqdm
-from ._utils import UnlabeledImageDataset, DataIter, ImagePool
+
 from .base import BaseSynthesis
 from .hooks import DeepInversionHook
+from ._utils import UnlabeledImageDataset, DataIter, ImagePool
+
+# Idea 1. Low-pass filter
+def low_pass_filter(images, cutoff_ratio=0.8):
+    B, C, H, W = images.shape
+    images_cpu = images.cpu()
+    fft_images = torch.fft.fftshift(torch.fft.fft2(images_cpu, dim=(-2, -1)), dim=(-2, -1))
+
+    Y, X = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
+    freq_grid = torch.stack([Y - H // 2, X - W // 2], dim=-1).float()
+    distance = torch.norm(freq_grid, dim=-1)
+    max_dist = torch.max(distance)
+    cutoff_radius = max_dist * cutoff_ratio
+
+    low_pass_mask = (distance <= cutoff_radius).float()
+    low_pass_mask_expanded = low_pass_mask.unsqueeze(0).unsqueeze(0).expand(B, C, H, W)
+    
+    filtered_fft_images = fft_images * low_pass_mask_expanded
+    filtered_images = torch.fft.ifft2(torch.fft.ifftshift(filtered_fft_images, dim=(-2, -1)), dim=(-2, -1)).real
+
+    return filtered_images.to(images.device)
+
+# Idea 2. Saliency Map Centering
+
+# Idea 3. Sparsification
 
 
 class Timer():
@@ -98,7 +127,7 @@ def jitter_and_flip_index(pre_index_matrix, off1, off2, flip, patch_size=16, num
     new_index_matrix[non_zero_mask] = new_indices
     return new_index_matrix
 
-class SMI(BaseSynthesis):
+class TBD_MI(BaseSynthesis):
     def __init__(self, teacher,teacher_name, student, num_classes, img_shape=(3, 224, 224),patch_size=16,
                  iterations=2000, lr_g=0.25,
                  synthesis_batch_size=128, sample_batch_size=128, 
@@ -106,7 +135,7 @@ class SMI(BaseSynthesis):
                  save_dir='', transform=None,
                  normalizer=None, device='cpu',
                  bnsource='resnet50v2',init_dataset=None):
-        super(SMI, self).__init__(teacher, student)
+        super(TBD_MI, self).__init__(teacher, student)
         assert len(img_shape)==3, "image size should be a 3-dimension tuple"
 
         self.save_dir = save_dir
@@ -115,6 +144,8 @@ class SMI(BaseSynthesis):
         self.iterations = iterations
         self.lr_g = lr_g
         self.normalizer = normalizer
+        
+        # Data pool
         self.data_pool = ImagePool(root=self.save_dir)
         self.data_iter = None
         self.transform = transform
@@ -122,10 +153,18 @@ class SMI(BaseSynthesis):
         self.sample_batch_size = sample_batch_size
         self.init_dataset=init_dataset
 
-        def count_parameters(model):
-            return sum(p.numel() for p in model.parameters() if p.requires_grad)
+        # Scaling factors
+        self.adv = adv
         self.bn = bn
+        self.oh = oh
+        self.tv1 = tv1
+        self.tv2 = tv2
+        self.l2 = l2
+        self.num_classes = num_classes
+
         if self.bn != 0:
+            def count_parameters(model):
+                return sum(p.numel() for p in model.parameters() if p.requires_grad)
             if bnsource == 'resnet50v2':
                 self.prior = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V2).cuda(
                     device)
@@ -138,16 +177,23 @@ class SMI(BaseSynthesis):
                 raise NotImplementedError
             self.prior.eval()
             self.prior.cuda()
-        # Scaling factors
-        self.adv = adv
-        self.oh = oh
-        self.tv1 = tv1
-        self.tv2 = tv2
-        self.l2 = l2
-        self.num_classes = num_classes
 
         # training configs
         self.device = device
+
+        # Idea 3. Sparsification
+        self.num_patches_per_dim = int(self.img_size[1] // self.patch_size)
+        Hp, Wp = self.num_patches_per_dim, self.num_patches_per_dim
+
+        yy, xx = torch.meshgrid(
+            torch.arange(Hp, device=self.device),
+            torch.arange(Wp, device=self.device),
+        )
+        cy, cx = (Hp - 1) / 2.0, (Wp - 1) / 2.0
+        r2 = (yy.float() - cy)**2 + (xx.float() - cx)**2
+
+        radial_order_flat = torch.argsort(r2.view(-1))
+        self.patch_radial_order = radial_order_flat
 
         # setup hooks for BN regularization
         if self.bn!=0:
@@ -157,18 +203,80 @@ class SMI(BaseSynthesis):
                     self.bn_hooks.append( DeepInversionHook(m) )
             assert len(self.bn_hooks)>0, 'input model should contains at least one BN layer for DeepInversion'
 
-    def synthesize(self, targets=None,num_patches=197,prune_it=[-1],prune_ratio=[0]):
+    # Idea 2. Saliency Map Centering
+    def _center_rad2(self, B):
+        """
+        각 픽셀의 거리^2을 반환함.
+        중심에 가까우면 0, 멀수록 1에 가까움.
+        """
+        H, W = self.img_size[1], self.img_size[2]
+        cy, cx = (H - 1) / 2.0, (W - 1) / 2.0
+
+        y = self._coord_y - cy
+        x = self._coord_x - cx
+        rad2 = (y*y + x*x) / self._norm_denom
+
+        return rad2
+
+    def _saliency_p(self, x, targets, current_abs_index, next_relative_index):
+        """
+        teacher 기준으로 saliency map을 확률분포 p(i,j)로 반환함.
+        x: [B, 3, H, W], requires_grad=False 텐서임
+        """
+        # 이 함수 내에서 requires_grad=True 텐서를 만들어서 사용함.
+        x_req = x.detach().clone().requires_grad_(True)
+
+        logits, _, _ = self.teacher(x_req, current_abs_index, next_relative_index)
+        score = logits.gather(1, targets.view(-1, 1)).sum()
+
+        grad = torch.autograd.grad(score, x_req, create_graph=False, retain_graph=False)[0]
+        sal = grad.abs().amax(dim=1, keepdim=True) # [B, 1, H, W]
+
+        sal_sum = sal.sum(dim=(2, 3), keepdim=True) + 1e-8
+        p = sal / sal_sum # [B, 1, H, W]
+        return p
+
+    def synthesize(self, targets=None,
+                   num_patches=197, prune_it=[-1], prune_ratio=[0],
+                   lpf=False, lpf_start=100, lpf_every=10, cutoff_ratio=0.8,
+                   sc_center=False, sc_warmup=100, sc_every=50, sc_center_lambda=0.1):
+
+        # Idea 1. Low-pass Filter
+        self.lpf = lpf
+        self.lpf_start = lpf_start
+        self.lpf_every = lpf_every
+        self.cutoff_ratio = cutoff_ratio
+
+        # Idea 2. Saliency Map Centering
+        self.sc_center = sc_center
+        self.sc_warmup = sc_warmup
+        self.sc_every = sc_every
+        self.sc_center_lambda = sc_center_lambda
+
+        H, W = self.img_size[1], self.img_size[2]
+        self._coord_y = torch.linspace(0, H-1, H, device=self.device).view(1,1,H,1)
+        self._coord_x = torch.linspace(0, W-1, W, device=self.device).view(1,1,1,W)
+        self._norm_denom = float(H*H + W*W)
+
+        # Idea 3. Sparsification
+
         self.student.eval()
         self.teacher.eval()
+
         best_cost = 1e6
-        inputs = torch.randn( size=[self.synthesis_batch_size, *self.img_size], device=self.device ).requires_grad_()
+        inputs = torch.randn(
+            size=[self.synthesis_batch_size, *self.img_size],
+            device=self.device
+        ).requires_grad_()
         if targets is None:
-            targets = torch.randint(low=0, high=self.num_classes, size=(self.synthesis_batch_size,))
+            targets = torch.randint(
+                low=0, high=self.num_classes,
+                size=(self.synthesis_batch_size,)
+            )
             targets = targets.sort()[0] # sort for better visualization
         targets = targets.to(self.device)
 
         optimizer = torch.optim.Adam([inputs], self.lr_g, betas=[0.5, 0.99])
-
         best_inputs = inputs.data
 
         current_abs_index = torch.LongTensor(list(range(num_patches))).repeat(best_inputs.shape[0], 1).to(self.device)
@@ -178,23 +286,54 @@ class SMI(BaseSynthesis):
             if it+1 in prune_it:
                 inputs_aug = inputs
                 current_abs_index_aug = current_abs_index
+
+                # Idea 1. Low-pass Filter
+                if self.lpf and (it >= self.lpf_start) and ((it + 1) % self.lpf_every == 0):
+                    inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+
                 t_out, attention_weights, _ = self.teacher(inputs_aug, current_abs_index_aug,next_relative_index)
+
             elif it in prune_it:
-                attention_weights = torch.mean(attention_weights[-1], dim=1)[:, 0, :][:, 1:]  # (B,heads,N,N)->(B,p-1)
                 prune_ratio_value = prune_ratio[prune_it.index(it)]
-                top_K=int(attention_weights.shape[1] * (1.0 - prune_ratio_value))
-                print('top_K:',top_K,'###',it)
-                next_relative_index=get_top_k_relative_indices_including_first(pre_attention=attention_weights, K=top_K).to(self.device)
+
+                num_spatial = self.num_patches_per_dim * self.num_patches_per_dim
+                top_K = int(num_spatial * (1.0 - prune_ratio_value))
+                top_K = max(1, min(num_spatial, top_K))
+
+                print(f"top_K (Radial Order): {top_K} ### Iteration: {it}")
+
+                B = inputs.shape[0]
+
+                keep_flat_idx = self.patch_radial_order[:top_K]
+                keep_patch_ids = (keep_flat_idx + 1).long()
+
+                cls_col = torch.zeros(B, 1, dtype=torch.long, device=self.device)
+                keep_col = keep_patch_ids.view(1, -1).expand(B, -1)
+                next_relative_index = torch.cat([cls_col, keep_col], dim=1)
+
                 inputs_aug = (inputs)
                 current_abs_index_aug = current_abs_index
+
+                # Idea 1. Low-pass Filter
+                if self.lpf and (it >= self.lpf_start) and ((it + 1) % self.lpf_every == 0):
+                    inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+
                 t_out, attention_weights, current_abs_index = self.teacher(inputs_aug, current_abs_index_aug,next_relative_index)
+
             else:
                 inputs_aug,off1,off2,flip = jitter_and_flip(inputs)
                 if current_abs_index.shape[1]==num_patches:
                     current_abs_index_aug = current_abs_index
                 else:
                     current_abs_index_aug =jitter_and_flip_index(current_abs_index,off1,off2,flip,self.patch_size,int(224//self.patch_size))
+
+                # Idea 1. Low-pass Filter
+                if self.lpf and (it >= self.lpf_start) and ((it + 1) % self.lpf_every == 0):
+                    inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+
                 t_out,attention_weights,_ = self.teacher(inputs_aug,current_abs_index_aug,next_relative_index)
+
+            # Loss
             if self.bn!=0:
                 _ = self.prior(inputs_aug)
                 rescale = [10.0] + [1. for _ in range(len(self.bn_hooks) - 1)]
@@ -212,6 +351,19 @@ class SMI(BaseSynthesis):
             loss_l2 = torch.norm(inputs, 2)
             loss = self.bn * loss_bn + self.oh * loss_oh + self.adv * loss_adv + self.tv1 * loss_tv1 + self.tv2*loss_tv2 + self.l2 * loss_l2
             
+            # Idea 2. Saliency Map Centering
+            if self.sc_center and (it >= self.sc_warmup) and ((it + 1) % self.sc_every == 0):
+                B = inputs_aug.shape[0]
+                p_sal = self._saliency_p(
+                    inputs_aug, targets,
+                    current_abs_index_aug,
+                    next_relative_index
+                )
+                rad2 = self._center_rad2(B)
+
+                L_center = (rad2 * p_sal).sum(dim=(1, 2, 3)).mean()
+                loss = loss + self.sc_center_lambda * L_center
+
             if best_cost > loss.item():
                 best_cost = loss.item()
                 best_inputs = inputs.data
@@ -231,23 +383,39 @@ class SMI(BaseSynthesis):
         with torch.no_grad():
             t_out,attention_weights,current_abs_index = self.teacher(best_inputs.detach(),torch.LongTensor(list(range(num_patches))).repeat(best_inputs.shape[0], 1).to(self.device),torch.LongTensor(list(range(num_patches))).repeat(best_inputs.shape[0], 1).to(self.device))
 
-        attention_weights = torch.mean(attention_weights[-1], dim=1)[:, 0, :][:, 1:]  # (B,heads,N,N)->(B,p-1)
+        # Idea 3. Sparsification
+        num_patches_per_dim = int(sqrt(num_patches))
+        num_spatial = num_patches - 1
 
         def cumulative_mul(lst):
             current_mul = 1
             for num in lst:
                 current_mul = current_mul*(1.-num)
             return current_mul
-        top_K=int(num_patches*(cumulative_mul(prune_ratio)))
 
-        next_relative_index = get_top_k_relative_indices_including_first(pre_attention=attention_weights, K=top_K).to(self.device)
+        top_K = int(num_spatial * cumulative_mul(prune_ratio))
+        top_K = max(1, min(num_spatial, top_K))
 
-        mask = torch.zeros(next_relative_index.shape[0], int(sqrt(num_patches)), int(sqrt(num_patches)))
-        for b in range(next_relative_index.shape[0]):
-            mask[b, (next_relative_index[b][1:] - 1) // int(sqrt(num_patches)), (next_relative_index[b][1:] - 1) % int(sqrt(num_patches))] = 1
+        B = best_inputs.shape[0]
+        keep_flat_idx = self.patch_radial_order[:top_K]
+        keep_patch_ids = (keep_flat_idx + 1).long()
+
+        cls_col = torch.zeros(B, 1, dtype=torch.long, device=self.device)
+        keep_col = keep_patch_ids.view(1, -1).expand(B, -1)
+        next_relative_index = torch.cat([cls_col, keep_col], dim=1)
+
+        mask = torch.zeros(B, num_patches_per_dim, num_patches_per_dim, device=self.device)
+        for b in range(B):
+            for pid in next_relative_index[b, 1:]:
+                idx = int(pid.item()) - 1
+                r = idx // num_patches_per_dim
+                c = idx % num_patches_per_dim
+                mask[b, r, c] = 1.0
+        
         expanded_mask = mask.repeat_interleave(self.patch_size, dim=1).repeat_interleave(self.patch_size, dim=2)
-        expanded_mask = expanded_mask.to(self.device)
         masked_best_inputs = best_inputs * expanded_mask.unsqueeze(1)
+        #####
+
         if not(len(prune_ratio)==1 and prune_ratio[0]==0): #add masked image
             self.data_pool.add( masked_best_inputs )
 

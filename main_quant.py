@@ -11,7 +11,7 @@ import numpy as np
 from torch.utils.data import DataLoader
 
 from utils import *
-from synthesis import SMI, SMI_VAR
+from synthesis import SMI, SMI_VAR, TBD_MI
 from quantization import *
 from utils.data_utils import find_non_zero_patches
 
@@ -35,7 +35,7 @@ def get_args_parser():
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["DMI", "SMI", "Gaussian", "Proposed"],
+        choices=["DMI", "SMI", "Gaussian", "TBD_MI"],
         help="mode to use for data generation"
     )
     parser.add_argument(
@@ -362,8 +362,8 @@ def main():
                 "val_prec5": float(val_prec5)
             })
 
-    # TODO: Mode 1: Proposed MI
-    elif args.mode == "Proposed":
+    # TODO: Mode 1: TBD_MI
+    elif args.mode == "TBD_MI":
         raise NotImplementedError
 
     # Case 1: Gaussian noise
