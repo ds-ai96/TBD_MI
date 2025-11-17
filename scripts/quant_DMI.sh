@@ -1,6 +1,6 @@
 gpu=$1
 
-for it in $(seq 400 100 4000); do
+for it in $(seq 100 100 4000); do
 python main_quant.py \
     --gpu "$gpu" \
     --mode DMI \
@@ -9,6 +9,6 @@ python main_quant.py \
     --dataset /home/mjatwk/data/imagenet/ \
     --datapool /home/jener05458/src/EdgeMI/TBD_MI/dataset/ \
     --iterations "$it" \
-    --w_bit 4 \
+    --w_bit 8 \
     --a_bit 8
 done

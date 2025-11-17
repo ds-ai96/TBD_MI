@@ -112,7 +112,55 @@ def get_args_parser():
     )
 
     # TODO: Proposed MI
+    ### Idea 1. Low-Pass Filtering
+    parser.add_argument(
+        "--lpf",
+        action="store_true",
+        help="use low-pass filtering"
+    )
+    parser.add_argument(
+        "--lpf_start",
+        type=int,
+        default=100,
+        help="start iteration for low-pass filtering"
+    )
+    parser.add_argument(
+        "--lpf_every",
+        type=int,
+        default=100,
+        help="interval for low-pass filtering"
+    )
+    parser.add_argument(
+        "--cutoff_ratio",
+        type=float,
+        default=0.5,
+        help="cutoff ratio for low-pass filtering"
+    )
 
+    ### Idea 2. Saliency Map Centering
+    parser.add_argument(
+        "--sc_center",
+        action="store_true",
+        help="use saliency map centering"
+    )
+    parser.add_argument(
+        "--sc_warmup",
+        type=int,
+        default=100,
+        help="start iteration for saliency map centering"
+    )
+    parser.add_argument(
+        "--sc_every",
+        type=int,
+        default=100,
+        help="interval for saliency map centering"
+    )
+    parser.add_argument(
+        "--sc_center_lambda",
+        type=float,
+        default=1.0,
+        help="lambda for saliency map centering"
+    )
 
     # Observation
     ## 가우시안 노이즈에서 variance 변화에 따른 성능 차이
@@ -208,6 +256,37 @@ def main():
                 run_name = f"{args.mode}-{args.iterations}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
             else:
                 run_name = f"{args.mode}-{args.iterations}-{args.variance}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
+        elif args.mode == "TBD_MI":
+            if args.variance == -1:
+                run_name = (
+                    f"{args.mode}-SC-{args.iterations}-"
+                    f"{str(args.lpf_start)}-"
+                    f"{str(args.lpf_every)}-"
+                    f"{str(args.cutoff_ratio)}-"
+                    f"{str(args.sc_warmup)}-"
+                    f"{str(args.sc_every)}-"
+                    f"{str(args.sc_center_lambda)}-"
+                    f"{'-'.join(map(str, args.prune_it))}-"
+                    f"{'-'.join(map(str, args.prune_ratio))}-"
+                    f"{args.seed}-{args.synthetic_bs*args.num_runs}-"
+                    f"W{args.w_bit}A{args.a_bit}"
+                )
+            else:
+                run_name = (
+                    f"{args.mode}-{args.iterations}-{args.variance}-"
+                    f"{str(args.lpf_start)}-"
+                    f"{str(args.lpf_every)}-"
+                    f"{str(args.cutoff_ratio)}-"
+                    f"{str(args.sc_warmup)}-"
+                    f"{str(args.sc_every)}-"
+                    f"{str(args.sc_center_lambda)}-"
+                    f"{'-'.join(map(str, args.prune_it))}-"
+                    f"{'-'.join(map(str, args.prune_ratio))}-"
+                    f"{args.seed}-{args.synthetic_bs*args.num_runs}-"
+                    f"W{args.w_bit}A{args.a_bit}"
+                )
+        else:
+            raise NotImplementedError
         wandb.init(
             project=args.project_name,
             name=run_name,
@@ -270,9 +349,11 @@ def main():
         patch_num = 197 if patch_size==16 else 50
 
         if args.mode == "DMI":
-            img_tag = f"{args.mode}-{iterations}-{str(args.seed)}-{str(args.synthetic_bs*args.num_runs)}-W{args.w_bit}A{args.a_bit}"
+            # img_tag = f"{args.mode}-{iterations}-{str(args.seed)}-{str(args.synthetic_bs*args.num_runs)}-W{args.w_bit}A{args.a_bit}"
+            img_tag = run_name
         elif args.mode == "SMI":
-            img_tag = f"{args.mode}-{iterations}-{str(prune_it)}-{str(prune_ratio)}-{str(args.seed)}-{str(args.synthetic_bs*args.num_runs)}-W{args.w_bit}A{args.a_bit}"
+            # img_tag = f"{args.mode}-{iterations}-{str(prune_it)}-{str(prune_ratio)}-{str(args.seed)}-{str(args.synthetic_bs*args.num_runs)}-W{args.w_bit}A{args.a_bit}"
+            img_tag = run_name
         else:
             raise NotImplementedError
         
@@ -364,7 +445,100 @@ def main():
 
     # TODO: Mode 1: TBD_MI
     elif args.mode == "TBD_MI":
-        raise NotImplementedError
+        iterations = args.iterations
+        lr_g = 0.25
+
+        # Hyperparameters
+        adv = 0
+        bn = 0.0
+        oh = 1
+        tv1 = 0
+        tv2 = 0.0001
+        l2 = 0
+
+        # Parameters for Sparsification
+        prune_it = args.prune_it
+        prune_ratio = args.prune_ratio
+
+        patch_size = 16 if '16' in args.model else 32
+        patch_num = 197 if patch_size==16 else 50
+
+        # img_tag = f"{args.mode}-{iterations}-{str(prune_it)}-{str(prune_ratio)}-{str(args.seed)}-{str(args.synthetic_bs*args.num_runs)}-W{args.w_bit}A{args.a_bit}"
+        img_tag = run_name
+        datapool_path=os.path.join(args.datapool,'%s/%s'%(args.model,img_tag)) # The path to store inverted data
+        if os.path.exists(datapool_path):
+            shutil.rmtree(datapool_path)
+            print(f"Removed existing data at {datapool_path}")
+
+        synthesizer = TBD_MI(
+            teacher=teacher, teacher_name=args.model, student=model, num_classes=num_classes,
+                img_shape=(3, 224, 224), iterations=iterations, patch_size=patch_size, lr_g=lr_g,
+                synthesis_batch_size=args.synthetic_bs, sample_batch_size=args.calib_batchsize,
+                adv=adv, bn=bn, oh=oh, tv1=tv1,tv2=tv2, l2=l2,
+                save_dir=datapool_path, transform=train_transform,
+                normalizer=normalizer, device=device, bnsource='resnet50v1', init_dataset=None
+        )
+
+        print(f"Generating data to {datapool_path}...")
+        total_imgs = 0
+        for run_idx in tqdm(range(args.num_runs), desc="Synthesizing"):
+            start = time.time()
+            results = synthesizer.synthesize(
+                num_patches=patch_num, prune_it=prune_it, prune_ratio=prune_ratio,
+                lpf=args.lpf, lpf_start=args.lpf_start, lpf_every=args.lpf_every, cutoff_ratio=args.cutoff_ratio,
+                sc_center=args.sc_center, sc_warmup=args.sc_warmup, sc_every=args.sc_every, sc_center_lambda=args.sc_center_lambda
+            )
+
+            elapsed = time.time() - start
+            print(f"[Run {run_idx+1}/{args.num_runs}] Time: {elapsed:.2f}s")
+
+        dst = synthesizer.data_pool.get_dataset(transform=train_transform)
+        print(f"[Calibration] Total synthetic images in pool: {len(dst)}")
+
+        calib_loader = DataLoader(
+            dst,
+            batch_size=args.calib_batchsize,
+            shuffle=False, num_workers=0, pin_memory=True,
+        )
+
+        print(f"Calibrating with generated data (full pool pass)...")
+        model.model_unfreeze()
+
+        with torch.no_grad():
+            for calibrate_data in calib_loader:
+                calibrate_data = calibrate_data.to(device)
+
+                current_abs_index = torch.arange(patch_num, device=calibrate_data.device).repeat(calibrate_data.shape[0], 1)
+                next_relative_index = torch.cat(
+                    [
+                        torch.zeros(calibrate_data.shape[0], 1, dtype=torch.long).to(calibrate_data.device),
+                        find_non_zero_patches(images=calibrate_data, patch_size=patch_size)
+                    ], dim=1
+                )
+
+                _ = model(
+                    calibrate_data,
+                    current_abs_index=current_abs_index,
+                    next_relative_index=next_relative_index
+                )
+
+        model.model_quant()
+        model.model_freeze()
+
+        # Validate the quantized model
+        print("Validating...")
+        val_loss, val_prec1, val_prec5 = validate(
+            args, val_loader, model, criterion, device
+        )
+
+        if args.wandb:
+            wandb.log({
+                "val_loss": float(val_loss),
+                "val_prec1": float(val_prec1),
+                "val_prec5": float(val_prec5)
+            })
+
+        
 
     # Case 1: Gaussian noise
     elif args.mode == "Gaussian":

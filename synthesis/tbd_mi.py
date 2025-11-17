@@ -36,11 +36,6 @@ def low_pass_filter(images, cutoff_ratio=0.8):
 
     return filtered_images.to(images.device)
 
-# Idea 2. Saliency Map Centering
-
-# Idea 3. Sparsification
-
-
 class Timer():
     def __init__(self):
         self.o = time.time()
@@ -224,12 +219,12 @@ class TBD_MI(BaseSynthesis):
         x: [B, 3, H, W], requires_grad=False 텐서임
         """
         # 이 함수 내에서 requires_grad=True 텐서를 만들어서 사용함.
-        x_req = x.detach().clone().requires_grad_(True)
+        x_req = x.clone().requires_grad_(True)
 
         logits, _, _ = self.teacher(x_req, current_abs_index, next_relative_index)
         score = logits.gather(1, targets.view(-1, 1)).sum()
 
-        grad = torch.autograd.grad(score, x_req, create_graph=False, retain_graph=False)[0]
+        grad = torch.autograd.grad(score, x_req, create_graph=True, retain_graph=True)[0]
         sal = grad.abs().amax(dim=1, keepdim=True) # [B, 1, H, W]
 
         sal_sum = sal.sum(dim=(2, 3), keepdim=True) + 1e-8

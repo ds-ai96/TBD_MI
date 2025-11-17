@@ -1,6 +1,6 @@
 gpu=$1
 
-for it in $(seq 400 100 4000); do
+for it in $(seq 100 100 4000); do
 python main_quant.py \
     --gpu "$gpu" \
     --mode SMI \
@@ -11,6 +11,6 @@ python main_quant.py \
     --iterations "$it" \
     --prune_it 50 100 200 300 \
     --prune_ratio 0.3 0.3 0.3 0.3 \
-    --w_bit 4 \
+    --w_bit 8 \
     --a_bit 8
 done
