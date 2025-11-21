@@ -5,7 +5,7 @@ python main_quant.py \
     --gpu "$gpu" \
     --mode DMI \
     --wandb \
-    --project_name "DMI_Quant_Gaussian" \
+    --project_name "DMI_Quant_Gaussian_New" \
     --dataset /home/mjatwk/data/imagenet/ \
     --datapool /home/jener05458/src/EdgeMI/TBD_MI/dataset/ \
     --iterations 4000 \

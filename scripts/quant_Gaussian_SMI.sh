@@ -1,11 +1,11 @@
 gpu=$1
 
-for var in $(seq 0.1 0.1 5.0); do
+for var in $(seq 0.0 0.1 5.0); do
 python main_quant.py \
     --gpu "$gpu" \
     --mode SMI \
     --wandb \
-    --project_name "SMI_Quant_Gaussian" \
+    --project_name "SMI_Quant_Gaussian_New" \
     --dataset /home/mjatwk/data/imagenet/ \
     --datapool /home/jener05458/src/EdgeMI/TBD_MI/dataset/ \
     --iterations 4000 \
