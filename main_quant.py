@@ -251,17 +251,11 @@ def main():
                 run_name = f"{args.mode}-{args.iterations}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
             else:
                 run_name = f"{args.mode}-{args.iterations}-{args.variance}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
-        elif args.mode == "SMI_SEED":
-            run_name = f"{args.mode}-{args.iterations}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
-            args.mode = "SMI"
         elif args.mode == "DMI":
             if args.variance == -1:
                 run_name = f"{args.mode}-{args.iterations}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
             else:
                 run_name = f"{args.mode}-{args.iterations}-{args.variance}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
-        elif args.mode == "DMI_SEED":
-            run_name = f"{args.mode}-{args.iterations}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
-            args.mode = "DMI"
         elif args.mode == "TBD_MI":
             if args.variance == -1:
                 run_name = (

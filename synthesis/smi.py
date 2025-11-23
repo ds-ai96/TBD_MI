@@ -260,7 +260,9 @@ class SMI(BaseSynthesis):
             dst, batch_size=self.sample_batch_size, shuffle=(train_sampler is None),
             num_workers=4, pin_memory=True, sampler=train_sampler)
         self.data_iter = DataIter(loader)
-        return {'synthetic': best_inputs,'masked_synthetic':masked_best_inputs}
+        # Target Logging
+        targets_np = targets.cpu().detach().numpy()
+        return {'synthetic': best_inputs,'masked_synthetic':masked_best_inputs, 'targets': targets_np}
         
     def sample(self):
         return self.data_iter.next()

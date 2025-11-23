@@ -3,7 +3,7 @@ gpu=$1
 for seed in $(seq 0 1 50); do
 python main_quant.py \
     --gpu "$gpu" \
-    --mode SMI_SEED \
+    --mode SMI \
     --wandb \
     --project_name "SMI_SEED" \
     --dataset /home/mjatwk/data/imagenet/ \
