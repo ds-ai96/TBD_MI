@@ -251,11 +251,17 @@ def main():
                 run_name = f"{args.mode}-{args.iterations}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
             else:
                 run_name = f"{args.mode}-{args.iterations}-{args.variance}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
+        elif args.mode == "SMI_SEED":
+            run_name = f"{args.mode}-{args.iterations}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
+            args.mode = "SMI"
         elif args.mode == "DMI":
             if args.variance == -1:
                 run_name = f"{args.mode}-{args.iterations}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
             else:
                 run_name = f"{args.mode}-{args.iterations}-{args.variance}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
+        elif args.mode == "DMI_SEED":
+            run_name = f"{args.mode}-{args.iterations}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
+            args.mode = "DMI"
         elif args.mode == "TBD_MI":
             if args.variance == -1:
                 run_name = (
@@ -287,6 +293,7 @@ def main():
                 )
         else:
             raise NotImplementedError
+
         wandb.init(
             project=args.project_name,
             name=run_name,
@@ -393,6 +400,8 @@ def main():
                 prune_it=prune_it,
                 prune_ratio=prune_ratio
             )
+            if args.wandb and 'targets' in results:
+                wandb.log({"targets": results['targets']}, step=args.seed)
 
             elapsed = time.time() - start
             print(f"[Run {run_idx+1}/{args.num_runs}] Time: {elapsed:.2f}s")
@@ -488,6 +497,8 @@ def main():
                 lpf=args.lpf, lpf_start=args.lpf_start, lpf_every=args.lpf_every, cutoff_ratio=args.cutoff_ratio,
                 sc_center=args.sc_center, sc_warmup=args.sc_warmup, sc_every=args.sc_every, sc_center_lambda=args.sc_center_lambda
             )
+            if args.wandb and 'targets' in results:
+                wandb.log({"targets": results['targets']}, step=args.seed)
 
             elapsed = time.time() - start
             print(f"[Run {run_idx+1}/{args.num_runs}] Time: {elapsed:.2f}s")
