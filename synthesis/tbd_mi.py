@@ -205,7 +205,10 @@ class TBD_MI(BaseSynthesis):
         중심에 가까우면 0, 멀수록 1에 가까움.
         """
         H, W = self.img_size[1], self.img_size[2]
-        cy, cx = (H - 1) / 2.0, (W - 1) / 2.0
+        
+        # Use calculated anchor coordinates
+        cy = self.anchor_cy
+        cx = self.anchor_cx
 
         y = self._coord_y - cy
         x = self._coord_x - cx
@@ -234,7 +237,8 @@ class TBD_MI(BaseSynthesis):
     def synthesize(self, targets=None,
                    num_patches=197, prune_it=[-1], prune_ratio=[0],
                    lpf=False, lpf_start=100, lpf_every=10, cutoff_ratio=0.8,
-                   sc_center=False, sc_warmup=100, sc_every=50, sc_center_lambda=0.1):
+                   sc_center=False, sc_warmup=100, sc_every=50, sc_center_lambda=0.1,
+                   saliency_anchor='c'):
 
         # Idea 1. Low-pass Filter
         self.lpf = lpf
@@ -247,11 +251,52 @@ class TBD_MI(BaseSynthesis):
         self.sc_warmup = sc_warmup
         self.sc_every = sc_every
         self.sc_center_lambda = sc_center_lambda
+        self.saliency_anchor = saliency_anchor
 
         H, W = self.img_size[1], self.img_size[2]
         self._coord_y = torch.linspace(0, H-1, H, device=self.device).view(1,1,H,1)
         self._coord_x = torch.linspace(0, W-1, W, device=self.device).view(1,1,1,W)
         self._norm_denom = float(H*H + W*W)
+
+        # Calculate Anchor Coordinates
+        cy_c, cx_c = (H - 1) / 2.0, (W - 1) / 2.0
+        
+        anchors = {
+            "nw": (0, 0),
+            "ne": (0, W-1),
+            "sw": (H-1, 0),
+            "se": (H-1, W-1),
+            "n": (0, cx_c),
+            "s": (H-1, cx_c),
+            "w": (cy_c, 0),
+            "e": (cy_c, W-1),
+            "c": (cy_c, cx_c)
+        }
+        
+        # Calculate half-way anchors
+        anchors["nwh"] = ((anchors["n"][0] + anchors["w"][0])/2, (anchors["n"][1] + anchors["w"][1])/2) # midpoint of c and nw logic check: (0+cy)/2, (cx+0)/2 ?? Wait. 
+        # User defined: seh: midpoint of center and se
+        # Center: (cy_c, cx_c)
+        # SE: (H-1, W-1)
+        # SEH: (cy_c + H-1)/2, (cx_c + W-1)/2
+        
+        def midpoint(p1, p2):
+            return ((p1[0] + p2[0])/2, (p1[1] + p2[1])/2)
+
+        c_point = anchors["c"]
+        anchors["seh"] = midpoint(c_point, anchors["se"])
+        anchors["swh"] = midpoint(c_point, anchors["sw"])
+        anchors["neh"] = midpoint(c_point, anchors["ne"])
+        anchors["nwh"] = midpoint(c_point, anchors["nw"])
+        anchors["eh"] = midpoint(c_point, anchors["e"])
+        anchors["wh"] = midpoint(c_point, anchors["w"])
+        anchors["sh"] = midpoint(c_point, anchors["s"])
+        anchors["nh"] = midpoint(c_point, anchors["n"])
+
+        if self.saliency_anchor in anchors:
+            self.anchor_cy, self.anchor_cx = anchors[self.saliency_anchor]
+        else:
+            raise ValueError(f"Unknown saliency anchor: {self.saliency_anchor}")
 
         # Idea 3. Sparsification
 

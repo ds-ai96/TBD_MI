@@ -171,6 +171,15 @@ def get_args_parser():
         help="variance of the Gaussian noise; -1: to use SMI"
     )
 
+    ## saliency map & sparsification 위치에 대한 실험
+    parser.add_argument(
+        "--saliency_anchor",
+        type=str,
+        default="c",
+        choices=["se", "sw", "ne", "nw", "e", "w", "s", "c", "seh", "swh", "neh", "nwh", "eh", "wh", "sh", "nh", "c"],
+        help="anchor for saliency map centering"
+    )
+
     # Logging
     parser.add_argument(
         "--wandb",
@@ -266,6 +275,7 @@ def main():
                     f"{str(args.sc_warmup)}-"
                     f"{str(args.sc_every)}-"
                     f"{str(args.sc_center_lambda)}-"
+                    f"{str(args.saliency_anchor)}-"
                     f"{'-'.join(map(str, args.prune_it))}-"
                     f"{'-'.join(map(str, args.prune_ratio))}-"
                     f"{args.seed}-{args.synthetic_bs*args.num_runs}-"
@@ -280,6 +290,7 @@ def main():
                     f"{str(args.sc_warmup)}-"
                     f"{str(args.sc_every)}-"
                     f"{str(args.sc_center_lambda)}-"
+                    f"{str(args.saliency_anchor)}-"
                     f"{'-'.join(map(str, args.prune_it))}-"
                     f"{'-'.join(map(str, args.prune_ratio))}-"
                     f"{args.seed}-{args.synthetic_bs*args.num_runs}-"
@@ -489,7 +500,8 @@ def main():
             results = synthesizer.synthesize(
                 num_patches=patch_num, prune_it=prune_it, prune_ratio=prune_ratio,
                 lpf=args.lpf, lpf_start=args.lpf_start, lpf_every=args.lpf_every, cutoff_ratio=args.cutoff_ratio,
-                sc_center=args.sc_center, sc_warmup=args.sc_warmup, sc_every=args.sc_every, sc_center_lambda=args.sc_center_lambda
+                sc_center=args.sc_center, sc_warmup=args.sc_warmup, sc_every=args.sc_every, sc_center_lambda=args.sc_center_lambda,
+                saliency_anchor=args.saliency_anchor
             )
             if args.wandb and 'targets' in results:
                 wandb.log({"targets": results['targets']}, step=args.seed)
