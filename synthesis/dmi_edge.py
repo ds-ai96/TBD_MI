@@ -84,6 +84,8 @@ class DMI_EDGE(SMI):
                 if lpf and (it >= lpf_start) and ((it + 1) % lpf_every == 0):
                      inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=cutoff_ratio)
                      current_lpf_applied = True
+                     if real_edge_maps is not None and smoothness > 0.0:
+                         inputs_aug = inputs_aug + smoothness * real_edge_maps
 
                 t_out, attention_weights, _ = self.teacher(inputs_aug, current_abs_index_aug,next_relative_index)
             elif it in prune_it:
@@ -97,6 +99,8 @@ class DMI_EDGE(SMI):
                 if lpf and (it >= lpf_start) and ((it + 1) % lpf_every == 0):
                      inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=cutoff_ratio)
                      current_lpf_applied = True
+                     if real_edge_maps is not None and smoothness > 0.0:
+                         inputs_aug = inputs_aug + smoothness * real_edge_maps
 
                 t_out, attention_weights, current_abs_index = self.teacher(inputs_aug, current_abs_index_aug,next_relative_index)
             else:
@@ -109,12 +113,12 @@ class DMI_EDGE(SMI):
                 if lpf and (it >= lpf_start) and ((it + 1) % lpf_every == 0):
                      inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=cutoff_ratio)
                      current_lpf_applied = True
+                     if real_edge_maps is not None and smoothness > 0.0:
+                         inputs_aug = inputs_aug + smoothness * real_edge_maps
 
                 t_out,attention_weights,_ = self.teacher(inputs_aug,current_abs_index_aug,next_relative_index)
 
-            # Method 1: Direct addition
-            if current_lpf_applied and real_edge_maps is not None and smoothness > 0.0:
-                inputs_aug = inputs_aug + smoothness * real_edge_maps
+
                 
             loss_edge = 0
             # Method 2: Loss optimization

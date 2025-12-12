@@ -286,6 +286,8 @@ def main():
         elif args.mode == "DMI":
             if args.variance == -1:
                 run_name = f"{args.mode}-{args.iterations}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
+                if args.reward_after_lpf:
+                    run_name += f"-LPF_EDGE-{args.smoothness}-{args.scale_edge}"
             else:
                 run_name = f"{args.mode}-{args.iterations}-{args.variance}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
         elif args.mode == "TBD_MI":
@@ -386,8 +388,6 @@ def main():
         if args.mode == "DMI":
             if args.variance == -1:
                 run_name = f"{args.mode}-{args.iterations}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
-                if args.reward_after_lpf:
-                    run_name += f"-LPF_EDGE-{args.smoothness}-{args.scale_edge}"
             else:
                 run_name = f"{args.mode}-{args.iterations}-{args.variance}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
             img_tag = run_name
