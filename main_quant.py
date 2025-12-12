@@ -11,7 +11,7 @@ import numpy as np
 from torch.utils.data import DataLoader
 
 from utils import *
-from synthesis import SMI, SMI_VAR, TBD_MI
+from synthesis import SMI, SMI_VAR, TBD_MI, DMI_EDGE
 from quantization import *
 from utils.data_utils import find_non_zero_patches
 
@@ -176,8 +176,31 @@ def get_args_parser():
         "--saliency_anchor",
         type=str,
         default="c",
-        choices=["se", "sw", "ne", "nw", "e", "w", "s", "c", "seh", "swh", "neh", "nwh", "eh", "wh", "sh", "nh", "c"],
+        choices=["se", "sw", "ne", "nw", "e", "w", "s", "n", "seh", "swh", "neh", "nwh", "eh", "wh", "sh", "nh", "c"],
         help="anchor for saliency map centering"
+    )
+
+    ## LPF 이후에 reward에 대한 가정 검증 실험
+    parser.add_argument(
+        "--reward_after_lpf",
+        action="store_true",
+        help="use reward after LPF"
+    )
+
+    ### edge 정보 더할 때, smoothness 조절
+    parser.add_argument(
+        "--smoothness",
+        type=float,
+        default=0.0,
+        help="smoothness for edge information"
+    )
+
+    ### edge 정보 align 할 때, scaling 조절
+    parser.add_argument(
+        "--scale_edge",
+        type=float,
+        default=0.0,
+        help="scale for edge information"
     )
 
     # Logging
@@ -361,7 +384,12 @@ def main():
         patch_num = 197 if patch_size==16 else 50
 
         if args.mode == "DMI":
-            # img_tag = f"{args.mode}-{iterations}-{str(args.seed)}-{str(args.synthetic_bs*args.num_runs)}-W{args.w_bit}A{args.a_bit}"
+            if args.variance == -1:
+                run_name = f"{args.mode}-{args.iterations}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
+                if args.reward_after_lpf:
+                    run_name += f"-LPF_EDGE-{args.smoothness}-{args.scale_edge}"
+            else:
+                run_name = f"{args.mode}-{args.iterations}-{args.variance}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
             img_tag = run_name
         elif args.mode == "SMI":
             # img_tag = f"{args.mode}-{iterations}-{str(prune_it)}-{str(prune_ratio)}-{str(args.seed)}-{str(args.synthetic_bs*args.num_runs)}-W{args.w_bit}A{args.a_bit}"
@@ -376,7 +404,16 @@ def main():
         
         # Generate synthetic data
 
-        if args.variance == -1:
+        if args.reward_after_lpf:
+            synthesizer = DMI_EDGE(
+                teacher=teacher, teacher_name=args.model, student=model, num_classes=num_classes,
+                img_shape=(3, 224, 224), iterations=iterations, patch_size=patch_size, lr_g=lr_g,
+                synthesis_batch_size=args.synthetic_bs, sample_batch_size=args.calib_batchsize,
+                adv=adv, bn=bn, oh=oh, tv1=tv1,tv2=tv2, l2=l2,
+                save_dir=datapool_path, transform=train_transform,
+                normalizer=normalizer, device=device, bnsource='resnet50v1', init_dataset=None
+            )
+        elif args.variance == -1:
             synthesizer = SMI(
                 teacher=teacher, teacher_name=args.model, student=model, num_classes=num_classes,
                 img_shape=(3, 224, 224), iterations=iterations, patch_size=patch_size, lr_g=lr_g,
@@ -398,13 +435,45 @@ def main():
 
         print(f"Generating data to {datapool_path}...")
         total_imgs = 0
+        
+        val_iter = iter(val_loader)
+        
         for run_idx in tqdm(range(args.num_runs), desc="Synthesizing"):
             start = time.time()
-            results = synthesizer.synthesize(
-                num_patches=patch_num,
-                prune_it=prune_it,
-                prune_ratio=prune_ratio
-            )
+            if args.reward_after_lpf:
+                # Sample real images
+                try:
+                    real_images, real_targets = next(val_iter)
+                except StopIteration:
+                    val_iter = iter(val_loader)
+                    real_images, real_targets = next(val_iter)
+                
+                # Ensure batch size matches synthetic_bs
+                if real_images.size(0) < args.synthetic_bs:
+                    # Should unlikely fail with small synthetic_bs, but handled simple by repeating or slicing
+                    pass
+                real_images = real_images[:args.synthetic_bs].to(device)
+                real_targets = real_targets[:args.synthetic_bs].to(device)
+                
+                results = synthesizer.synthesize(
+                    targets=real_targets,
+                    real_images=real_images,
+                    num_patches=patch_num,
+                    prune_it=prune_it,
+                    prune_ratio=prune_ratio,
+                    lpf=args.lpf, 
+                    lpf_start=args.lpf_start, 
+                    lpf_every=args.lpf_every, 
+                    cutoff_ratio=args.cutoff_ratio,
+                    smoothness=args.smoothness,
+                    scale_edge=args.scale_edge
+                )
+            else:
+                results = synthesizer.synthesize(
+                    num_patches=patch_num,
+                    prune_it=prune_it,
+                    prune_ratio=prune_ratio
+                )
             if args.wandb and 'targets' in results:
                 wandb.log({"targets": results['targets']}, step=args.seed)
 
