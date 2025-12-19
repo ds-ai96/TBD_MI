@@ -9,7 +9,7 @@ python main_quant.py \
     --dataset /home/mjatwk/data/imagenet/ \
     --datapool /home/jener05458/src/EdgeMI/TBD_MI/dataset/ \
     --iterations 4000 \
-    --w_bit 4 \
+    --w_bit 8 \
     --a_bit 8 \
     --num_runs "$num"
 done

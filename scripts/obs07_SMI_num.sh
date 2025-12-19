@@ -11,7 +11,7 @@ python main_quant.py \
     --iterations 4000 \
     --prune_it 50 100 200 300 \
     --prune_ratio 0.3 0.3 0.3 0.3 \
-    --w_bit 4 \
+    --w_bit 8 \
     --a_bit 8 \
     --num_runs "$num"
 done

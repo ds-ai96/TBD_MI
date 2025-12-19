@@ -306,6 +306,8 @@ def main():
                     f"{args.seed}-{args.synthetic_bs*args.num_runs}-"
                     f"W{args.w_bit}A{args.a_bit}"
                 )
+                if args.reward_after_lpf:
+                    run_name += f"-LPF_EDGE-{args.smoothness}-{args.scale_edge}"
             else:
                 run_name = (
                     f"{args.mode}-{args.iterations}-{args.variance}-"
@@ -321,6 +323,8 @@ def main():
                     f"{args.seed}-{args.synthetic_bs*args.num_runs}-"
                     f"W{args.w_bit}A{args.a_bit}"
                 )
+                if args.reward_after_lpf:
+                    run_name += f"-LPF_EDGE-{args.smoothness}-{args.scale_edge}"
         else:
             raise NotImplementedError
 

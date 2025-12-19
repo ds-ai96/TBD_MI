@@ -234,11 +234,18 @@ class TBD_MI(BaseSynthesis):
         p = sal / sal_sum # [B, 1, H, W]
         return p
 
+    def sobel(img):
+        kx = torch.tensor([[1, 0, -1], [2, 0, -2], [1, 0, -1]], dtype=torch.float32, device=img.device).view(1,1,3,3)
+        ky = torch.tensor([[1, 2, 1], [0, 0, 0], [-1, -2, -1]], dtype=torch.float32, device=img.device).view(1,1,3,3)
+        edges_x = F.conv2d(img, kx, padding=1)
+        edges_y = F.conv2d(img, ky, padding=1)
+        return torch.sqrt(edges_x**2 + edges_y**2 + 1e-8)
+
     def synthesize(self, targets=None,
                    num_patches=197, prune_it=[-1], prune_ratio=[0],
                    lpf=False, lpf_start=100, lpf_every=10, cutoff_ratio=0.8,
                    sc_center=False, sc_warmup=100, sc_every=50, sc_center_lambda=0.1,
-                   saliency_anchor='c'):
+                   saliency_anchor='c', scale_edge=0.0):
 
         # Idea 1. Low-pass Filter
         self.lpf = lpf
@@ -369,9 +376,17 @@ class TBD_MI(BaseSynthesis):
 
                 # Idea 1. Low-pass Filter
                 if self.lpf and (it >= self.lpf_start) and ((it + 1) % self.lpf_every == 0):
+                    if scale_edge > 0.0:
+                        pre_synth_edges = sobel(inputs_aug.mean(dim=1, keepdim=True))
                     inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
 
                 t_out,attention_weights,_ = self.teacher(inputs_aug,current_abs_index_aug,next_relative_index)
+
+            loss_edge = 0
+            # Edge Loss
+            if scale_edge > 0.0:
+                synth_edges = sobel(inputs_aug.mean(dim=1, keepdim=True)) # [B, 1, H, W] grayscale edge
+                loss_edge = scale_edge * F.mse_loss(synth_edges, pre_synth_edges)
 
             # Loss
             if self.bn!=0:
@@ -391,6 +406,9 @@ class TBD_MI(BaseSynthesis):
             loss_l2 = torch.norm(inputs, 2)
             loss = self.bn * loss_bn + self.oh * loss_oh + self.adv * loss_adv + self.tv1 * loss_tv1 + self.tv2*loss_tv2 + self.l2 * loss_l2
             
+            if scale_edge > 0.0: # TODO: 추후에 수정하기 너무 코드 대충짬
+                loss = loss + loss_edge
+
             # Idea 2. Saliency Map Centering
             if self.sc_center and (it >= self.sc_warmup) and ((it + 1) % self.sc_every == 0):
                 B = inputs_aug.shape[0]
