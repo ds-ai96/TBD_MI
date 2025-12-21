@@ -157,7 +157,7 @@ class SMI(BaseSynthesis):
                     self.bn_hooks.append( DeepInversionHook(m) )
             assert len(self.bn_hooks)>0, 'input model should contains at least one BN layer for DeepInversion'
 
-    def synthesize(self, targets=None,num_patches=197,prune_it=[-1],prune_ratio=[0]):
+    def synthesize(self, targets=None,num_patches=197,prune_it=[-1],prune_ratio=[0], use_soft_label=False, soft_label_alpha=0.9):
         self.student.eval()
         self.teacher.eval()
         best_cost = 1e6
@@ -166,6 +166,20 @@ class SMI(BaseSynthesis):
             targets = torch.randint(low=0, high=self.num_classes, size=(self.synthesis_batch_size,))
             targets = targets.sort()[0] # sort for better visualization
         targets = targets.to(self.device)
+        
+        if use_soft_label and targets.dim() == 1:
+            alpha = float(soft_label_alpha)
+            if not 0.0 <= alpha <= 1.0:
+                raise ValueError("soft_label_alpha must be between 0 and 1.")
+            off_value = (1.0 - alpha) / (self.num_classes - 1)
+            targets_soft = torch.full(
+                (targets.size(0), self.num_classes),
+                off_value,
+                device=self.device,
+                dtype=inputs.dtype,
+            )
+            targets_soft.scatter_(1, targets.view(-1, 1), alpha)
+            targets = targets_soft
 
         optimizer = torch.optim.Adam([inputs], self.lr_g, betas=[0.5, 0.99])
 
@@ -202,7 +216,14 @@ class SMI(BaseSynthesis):
             else:
                 loss_bn=0
 
-            loss_oh = F.cross_entropy( t_out, targets )
+            if use_soft_label or targets.dim() == 2:
+                loss_oh = F.kl_div(
+                    F.log_softmax(t_out, dim=1),
+                    targets,
+                    reduction="batchmean",
+                )
+            else:
+                loss_oh = F.cross_entropy(t_out, targets)
             if self.adv>0:
                 s_out = self.student(inputs_aug)
                 loss_adv = -jsdiv(s_out, t_out, T=3)

@@ -203,6 +203,20 @@ def get_args_parser():
         help="scale for edge information"
     )
 
+    ## Hard-label 대신 Soft-label을 사용하는 경우
+    parser.add_argument(
+        "--use_soft_label",
+        action="store_true",
+        help="use soft labels for targets"
+    )
+
+    parser.add_argument(
+        "--soft_label_alpha",
+        type=float,
+        default=0.9,
+        help="alpha for soft labels (target class probability)"
+    )
+
     # Logging
     parser.add_argument(
         "--wandb",
@@ -288,6 +302,8 @@ def main():
                 run_name = f"{args.mode}-{args.iterations}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
                 if args.reward_after_lpf:
                     run_name += f"-LPF_EDGE-{args.smoothness}-{args.scale_edge}"
+                if args.use_soft_label:
+                    run_name += f"-SOFT_LABEL-{args.soft_label_alpha}"
             else:
                 run_name = f"{args.mode}-{args.iterations}-{args.variance}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
         elif args.mode == "TBD_MI":
@@ -473,10 +489,13 @@ def main():
                     scale_edge=args.scale_edge
                 )
             else:
+                # Question07: Soft label 사용 관련
                 results = synthesizer.synthesize(
                     num_patches=patch_num,
                     prune_it=prune_it,
-                    prune_ratio=prune_ratio
+                    prune_ratio=prune_ratio,
+                    use_soft_label=args.use_soft_label,
+                    soft_label_alpha=args.soft_label_alpha
                 )
             if args.wandb and 'targets' in results:
                 wandb.log({"targets": results['targets']}, step=args.seed)

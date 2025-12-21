@@ -406,7 +406,7 @@ class TBD_MI(BaseSynthesis):
             loss_l2 = torch.norm(inputs, 2)
             loss = self.bn * loss_bn + self.oh * loss_oh + self.adv * loss_adv + self.tv1 * loss_tv1 + self.tv2*loss_tv2 + self.l2 * loss_l2
             
-            if scale_edge > 0.0: # TODO: 추후에 수정하기 너무 코드 대충짬
+            if scale_edge > 0.0: # TODO: 추후에 수정하기 너무 코드 대충짬 & 해당 부분 gradient 체크하기
                 loss = loss + loss_edge
 
             # Idea 2. Saliency Map Centering
