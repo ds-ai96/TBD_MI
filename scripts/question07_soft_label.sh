@@ -1,6 +1,7 @@
 gpu=$1
+w_bit=$2
 
-for alpha in 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0; do
+for alpha in 0.50 0.55 0.60 0.65 0.70 0.75 0.80 0.85 0.90 0.95 1.00; do
 python main_quant.py \
     --gpu "$gpu" \
     --mode DMI \
@@ -9,7 +10,7 @@ python main_quant.py \
     --dataset /home/mjatwk/data/imagenet/ \
     --datapool /home/jener05458/src/EdgeMI/TBD_MI/dataset/ \
     --iterations 4000 \
-    --w_bit 8 \
+    --w_bit "$w_bit" \
     --a_bit 8 \
     --seed 0 \
     --use_soft_label \
