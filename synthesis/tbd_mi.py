@@ -19,10 +19,13 @@ from ._utils import UnlabeledImageDataset, DataIter, ImagePool
 # Idea 1. Low-pass filter
 def low_pass_filter(images, cutoff_ratio=0.8):
     B, C, H, W = images.shape
-    images_cpu = images.cpu()
-    fft_images = torch.fft.fftshift(torch.fft.fft2(images_cpu, dim=(-2, -1)), dim=(-2, -1))
+    fft_images = torch.fft.fftshift(torch.fft.fft2(images, dim=(-2, -1)), dim=(-2, -1))
 
-    Y, X = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
+    Y, X = torch.meshgrid(
+        torch.arange(H, device=images.device),
+        torch.arange(W, device=images.device),
+        indexing='ij'
+    )
     freq_grid = torch.stack([Y - H // 2, X - W // 2], dim=-1).float()
     distance = torch.norm(freq_grid, dim=-1)
     max_dist = torch.max(distance)
@@ -34,7 +37,7 @@ def low_pass_filter(images, cutoff_ratio=0.8):
     filtered_fft_images = fft_images * low_pass_mask_expanded
     filtered_images = torch.fft.ifft2(torch.fft.ifftshift(filtered_fft_images, dim=(-2, -1)), dim=(-2, -1)).real
 
-    return filtered_images.to(images.device)
+    return filtered_images
 
 class Timer():
     def __init__(self):
