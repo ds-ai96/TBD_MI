@@ -1,7 +1,4 @@
 """
-Gradient comparison between real ImageNet images and synthetic data using a
-pretrained DeiT-Base/16 classifier head (timm).
-
 This script supports two analysis modes:
 1. "per_class": sample exactly one image per ImageNet class from both the
    real dataset and a synthetic counterpart that mirrors the ImageFolder
@@ -37,6 +34,8 @@ from torchvision import datasets
 
 from main_quant import get_teacher
 from utils import build_model
+from synthesis import SMI
+from synthesis._utils import Normalizer
 
 @dataclass
 class GradientSummary:
@@ -135,23 +134,135 @@ def get_model(name):
         raise NotImplementedError
     return model
 
-def load_one_image_per_class(root: str, transform: T.Compose, max_classes: int | None = None) -> List[Tuple[torch.Tensor, int]]:
-    dataset = datasets.ImageNet(root=root, split='val', transform=transform)
+def generate_synthetic_dataset(
+    root: str,
+    model_name: str,
+    student_model: nn.Module,
+    device: torch.device,
+    class_to_idx: dict[str, int],
+    limit_classes: int | None = None
+) -> None:
+    print(f"Directory {root} does not exist. Generating synthetic images...")
+    
+    # Use a subdirectory for SMI's internal dump to avoid polluting the root or conflict with ImageFolder content
+    dump_dir = os.path.join(root, "__raw_dump")
+    os.makedirs(dump_dir, exist_ok=True)
+    
+    teacher = get_teacher(model_name).to(device)
+    teacher.eval()
+    
+    # ImageNet stats
+    mean = [0.485, 0.456, 0.406]
+    std = [0.229, 0.224, 0.225]
+    normalizer = Normalizer(mean, std)
+    
+    synthesizer = SMI(
+        teacher=teacher,
+        teacher_name=model_name,
+        student=student_model,
+        num_classes=1000,
+        img_shape=(3, 224, 224),
+        iterations=500,
+        lr_g=0.25,
+        synthesis_batch_size=32,
+        sample_batch_size=32,
+        save_dir=dump_dir,
+        transform=None,
+        normalizer=normalizer,
+        device=device
+    )
+    
+    classes_to_gen = sorted(list(class_to_idx.items()), key=lambda x: x[1])
+    if limit_classes:
+        classes_to_gen = classes_to_gen[:limit_classes]
+    
+    batch_size = 32
+    
+    import shutil
+    
+    total_batches = (len(classes_to_gen) + batch_size - 1) // batch_size
+    
+    for i in range(0, len(classes_to_gen), batch_size):
+        batch_classes = classes_to_gen[i : i + batch_size]
+        current_bs = len(batch_classes)
+        
+        targets = torch.tensor([idx for _, idx in batch_classes], device=device, dtype=torch.long)
+        
+        if current_bs < batch_size:
+            pad_size = batch_size - current_bs
+            # Pad with 0
+            targets_padded = torch.cat([targets, torch.zeros(pad_size, device=device, dtype=torch.long)])
+        else:
+            targets_padded = targets
+            
+        print(f"Generating batch {i // batch_size + 1}/{total_batches}")
+        
+        results = synthesizer.synthesize(targets=targets_padded, num_patches=197, prune_it=[-1], prune_ratio=[0])
+        synthetic_images = results['synthetic'] # Denormalized tensors [B, 3, H, W]
+        
+        for j, (class_name, class_idx) in enumerate(batch_classes):
+            img_tensor = synthetic_images[j]
+            img_np = (img_tensor.detach().clamp(0, 1).cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+            img_pil = Image.fromarray(img_np)
+            
+            class_dir = os.path.join(root, class_name)
+            os.makedirs(class_dir, exist_ok=True)
+            img_pil.save(os.path.join(class_dir, f"{class_name}_0.png"))
+            
+    # Cleanup raw dump
+    try:
+        shutil.rmtree(dump_dir)
+    except Exception as e:
+        print(f"Warning: Could not remove temporary dump directory {dump_dir}: {e}")
+
+    print("Generation complete.")
+
+def _load_one_image_per_class(dataset, label_mapper, expected_classes):
     seen = set()
     samples: List[Tuple[torch.Tensor, int]] = []
     for image, label in dataset:
-        if label in seen:
+        mapped_label = label_mapper(label)
+        if mapped_label is None or mapped_label in seen:
             continue
-        seen.add(label)
-        samples.append((image, label))
-        if max_classes is not None and len(samples) >= max_classes:
+        seen.add(mapped_label)
+        samples.append((image, mapped_label))
+        if len(samples) >= expected_classes:
             break
-        if len(seen) == 1000:  # ImageNet has 1000 classes
-            break
-    if max_classes is not None and len(samples) < max_classes:
-        raise RuntimeError(f"Requested {max_classes} classes but only found {len(samples)}")
+    if len(samples) < expected_classes:
+        raise RuntimeError(f"Requested {expected_classes} classes but only found {len(samples)}")
     return samples
 
+def load_one_image_per_class_imagenet(
+    root: str, transform: T.Compose, max_classes: int | None = None
+) -> Tuple[List[Tuple[torch.Tensor, int]], dict[str, int]]:
+    dataset = datasets.ImageNet(root=root, split="val", transform=transform)
+    expected = max_classes or len(dataset.classes)
+    samples = _load_one_image_per_class(dataset, label_mapper=lambda lbl: lbl, expected_classes=expected)
+    return samples, dataset.class_to_idx
+
+def load_one_image_per_class_imagefolder(
+    root: str, 
+    transform: T.Compose, 
+    class_to_idx: dict[str, int], 
+    max_classes: int | None = None,
+    model: nn.Module | None = None,
+    model_name: str | None = None,
+    device: torch.device | None = None
+) -> List[Tuple[torch.Tensor, int]]:
+    
+    if not os.path.exists(root):
+        if model is None or model_name is None or device is None:
+             raise RuntimeError(f"Directory {root} missing and model/device info not provided for auto-generation")
+        generate_synthetic_dataset(root, model_name, model, device, class_to_idx, max_classes)
+
+    dataset = datasets.ImageFolder(root=root, transform=transform)
+    expected = max_classes or len(class_to_idx)
+
+    def label_mapper(label: int) -> int | None:
+        class_name = dataset.classes[label]
+        return class_to_idx.get(class_name)
+
+    return _load_one_image_per_class(dataset, label_mapper=label_mapper, expected_classes=expected)
 
 def build_loader_from_samples(samples: Sequence[Tuple[torch.Tensor, int]], batch_size: int, num_workers: int) -> DataLoader:
     images = torch.stack([img for img, _ in samples])
@@ -257,11 +368,12 @@ def gather_real_images_for_labels(root: str, labels: Sequence[int], transform: T
     return collected
 
 
-def run_per_class_mode(
-    args: argparse.Namespace, model: nn.Module, device: torch.device, transform: T.Compose
-) -> None:
-    real_samples = load_one_image_per_class(args.imagenet_root, transform, args.limit_classes)
-    synthetic_samples = load_one_image_per_class(args.synthetic_root, transform, args.limit_classes)
+def run_per_class_mode(args, model, device, transform) -> None:
+    real_samples, class_to_idx = load_one_image_per_class_imagenet(args.imagenet_root, transform, args.limit_classes)
+    synthetic_samples = load_one_image_per_class_imagefolder(
+        args.synthetic_root, transform, class_to_idx, args.limit_classes,
+        model=model, model_name=args.model, device=device
+    )
 
     real_loader = build_loader_from_samples(real_samples, args.batch_size, args.num_workers)
     synthetic_loader = build_loader_from_samples(synthetic_samples, args.batch_size, args.num_workers)
