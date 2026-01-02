@@ -237,7 +237,7 @@ class TBD_MI(BaseSynthesis):
         p = sal / sal_sum # [B, 1, H, W]
         return p
 
-    def sobel(img):
+    def _sobel_filter(img):
         kx = torch.tensor([[1, 0, -1], [2, 0, -2], [1, 0, -1]], dtype=torch.float32, device=img.device).view(1,1,3,3)
         ky = torch.tensor([[1, 2, 1], [0, 0, 0], [-1, -2, -1]], dtype=torch.float32, device=img.device).view(1,1,3,3)
         edges_x = F.conv2d(img, kx, padding=1)
@@ -246,19 +246,18 @@ class TBD_MI(BaseSynthesis):
 
     def synthesize(self, targets=None,
                    num_patches=197, prune_it=[-1], prune_ratio=[0],
-                   lpf=False, lpf_start=100, lpf_every=10, cutoff_ratio=0.8,
-                   sc_center=False, sc_warmup=100, sc_every=50, sc_center_lambda=0.1,
-                   saliency_anchor='c', scale_edge=0.0):
+                   lpf=False, lpf_every=10, cutoff_ratio=0.8,
+                   sc_center=False, sc_every=50, sc_center_lambda=0.1,
+                   saliency_anchor='c', scale_edge=0.0,
+                   use_soft_label=False, soft_label_alpha=0.6):
 
         # Idea 1. Low-pass Filter
         self.lpf = lpf
-        self.lpf_start = lpf_start
         self.lpf_every = lpf_every
         self.cutoff_ratio = cutoff_ratio
 
         # Idea 2. Saliency Map Centering
         self.sc_center = sc_center
-        self.sc_warmup = sc_warmup
         self.sc_every = sc_every
         self.sc_center_lambda = sc_center_lambda
         self.saliency_anchor = saliency_anchor
@@ -308,7 +307,9 @@ class TBD_MI(BaseSynthesis):
         else:
             raise ValueError(f"Unknown saliency anchor: {self.saliency_anchor}")
 
-        # Idea 3. Sparsification
+        # Idea 3. Soft label
+        self.use_soft_label = use_soft_label
+        self.soft_label_alpha = soft_label_alpha
 
         self.student.eval()
         self.teacher.eval()
@@ -326,6 +327,21 @@ class TBD_MI(BaseSynthesis):
             targets = targets.sort()[0] # sort for better visualization
         targets = targets.to(self.device)
 
+        # Idea 3. Soft Label
+        if self.use_soft_label:
+            alpha = float(self.soft_label_alpha)
+            if not 0.0 <= alpha <= 1.0:
+                raise ValueError("soft_label_alpha should be between 0.0 and 1.0")
+            off_value = (1.0 - alpha) / (self.num_classes - 1)
+            targets_soft = torch.full(
+                (targets.size(0), self.num_classes),
+                off_value,
+                device=self.device,
+                dtype=inputs.dtype
+            )
+            targets_soft.scatter_(1, targets.view(-1, 1), alpha)
+            targets = targets_soft
+
         optimizer = torch.optim.Adam([inputs], self.lr_g, betas=[0.5, 0.99])
         best_inputs = inputs.data
 
@@ -338,7 +354,7 @@ class TBD_MI(BaseSynthesis):
                 current_abs_index_aug = current_abs_index
 
                 # Idea 1. Low-pass Filter
-                if self.lpf and (it >= self.lpf_start) and ((it + 1) % self.lpf_every == 0):
+                if self.lpf and ((it + 1) % self.lpf_every == 0):
                     inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
 
                 t_out, attention_weights, _ = self.teacher(inputs_aug, current_abs_index_aug,next_relative_index)
@@ -365,7 +381,7 @@ class TBD_MI(BaseSynthesis):
                 current_abs_index_aug = current_abs_index
 
                 # Idea 1. Low-pass Filter
-                if self.lpf and (it >= self.lpf_start) and ((it + 1) % self.lpf_every == 0):
+                if self.lpf and ((it + 1) % self.lpf_every == 0):
                     inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
 
                 t_out, attention_weights, current_abs_index = self.teacher(inputs_aug, current_abs_index_aug,next_relative_index)
@@ -378,18 +394,12 @@ class TBD_MI(BaseSynthesis):
                     current_abs_index_aug =jitter_and_flip_index(current_abs_index,off1,off2,flip,self.patch_size,int(224//self.patch_size))
 
                 # Idea 1. Low-pass Filter
-                if self.lpf and (it >= self.lpf_start) and ((it + 1) % self.lpf_every == 0):
+                if self.lpf and ((it + 1) % self.lpf_every == 0):
                     if scale_edge > 0.0:
-                        pre_synth_edges = sobel(inputs_aug.mean(dim=1, keepdim=True))
+                        pre_synth_edges = self._sobel_filter(inputs_aug.mean(dim=1, keepdim=True))
                     inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
 
                 t_out,attention_weights,_ = self.teacher(inputs_aug,current_abs_index_aug,next_relative_index)
-
-            loss_edge = 0
-            # Edge Loss
-            if scale_edge > 0.0:
-                synth_edges = sobel(inputs_aug.mean(dim=1, keepdim=True)) # [B, 1, H, W] grayscale edge
-                loss_edge = scale_edge * F.mse_loss(synth_edges, pre_synth_edges)
 
             # Loss
             if self.bn!=0:
@@ -399,7 +409,14 @@ class TBD_MI(BaseSynthesis):
             else:
                 loss_bn=0
 
-            loss_oh = F.cross_entropy( t_out, targets )
+            if self.use_soft_label:
+                loss_oh = F.kl_div(
+                    F.log_softmax(t_out, dim=1),
+                    targets,
+                    reduction='batchmean'
+                )
+            else:
+                loss_oh = F.cross_entropy( t_out, targets )
             if self.adv>0:
                 s_out = self.student(inputs_aug)
                 loss_adv = -jsdiv(s_out, t_out, T=3)
@@ -409,11 +426,14 @@ class TBD_MI(BaseSynthesis):
             loss_l2 = torch.norm(inputs, 2)
             loss = self.bn * loss_bn + self.oh * loss_oh + self.adv * loss_adv + self.tv1 * loss_tv1 + self.tv2*loss_tv2 + self.l2 * loss_l2
             
+            loss_edge = 0
             if scale_edge > 0.0: # TODO: 추후에 수정하기 너무 코드 대충짬 & 해당 부분 gradient 체크하기
+                synth_edges = self._sobel_filter(inputs_aug.mean(dim=1, keepdim=True)) # [B, 1, H, W] grayscale edge
+                loss_edge = scale_edge * F.mse_loss(synth_edges, pre_synth_edges)
                 loss = loss + loss_edge
 
             # Idea 2. Saliency Map Centering
-            if self.sc_center and (it >= self.sc_warmup) and ((it + 1) % self.sc_every == 0):
+            if self.sc_center and ((it + 1) % self.sc_every == 0):
                 B = inputs_aug.shape[0]
                 p_sal = self._saliency_p(
                     inputs_aug, targets,

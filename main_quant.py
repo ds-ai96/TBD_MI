@@ -569,7 +569,6 @@ def main():
         patch_size = 16 if '16' in args.model else 32
         patch_num = 197 if patch_size==16 else 50
 
-        # img_tag = f"{args.mode}-{iterations}-{str(prune_it)}-{str(prune_ratio)}-{str(args.seed)}-{str(args.synthetic_bs*args.num_runs)}-W{args.w_bit}A{args.a_bit}"
         img_tag = run_name
         datapool_path=os.path.join(args.datapool,'%s/%s'%(args.model,img_tag)) # The path to store inverted data
         if os.path.exists(datapool_path):
@@ -591,9 +590,11 @@ def main():
             start = time.time()
             results = synthesizer.synthesize(
                 num_patches=patch_num, prune_it=prune_it, prune_ratio=prune_ratio,
-                lpf=args.lpf, lpf_start=args.lpf_start, lpf_every=args.lpf_every, cutoff_ratio=args.cutoff_ratio,
-                sc_center=args.sc_center, sc_warmup=args.sc_warmup, sc_every=args.sc_every, sc_center_lambda=args.sc_center_lambda,
-                saliency_anchor=args.saliency_anchor
+                lpf=args.lpf, lpf_every=args.lpf_every, cutoff_ratio=args.cutoff_ratio,
+                scale_edge=args.scale_edge,
+                sc_center=args.sc_center, sc_every=args.sc_every, sc_center_lambda=args.sc_center_lambda,
+                saliency_anchor=args.saliency_anchor,
+                use_soft_label=args.use_soft_label, soft_label_alpha=args.soft_label_alpha
             )
             if args.wandb and 'targets' in results:
                 wandb.log({"targets": results['targets']}, step=args.seed)
