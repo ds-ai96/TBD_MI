@@ -119,12 +119,6 @@ def get_args_parser():
         help="use low-pass filtering"
     )
     parser.add_argument(
-        "--lpf_start",
-        type=int,
-        default=100,
-        help="start iteration for low-pass filtering"
-    )
-    parser.add_argument(
         "--lpf_every",
         type=int,
         default=100,
@@ -142,12 +136,6 @@ def get_args_parser():
         "--sc_center",
         action="store_true",
         help="use saliency map centering"
-    )
-    parser.add_argument(
-        "--sc_warmup",
-        type=int,
-        default=100,
-        help="start iteration for saliency map centering"
     )
     parser.add_argument(
         "--sc_every",
@@ -310,10 +298,8 @@ def main():
             if args.variance == -1:
                 run_name = (
                     f"{args.mode}-SC-{args.iterations}-"
-                    f"{str(args.lpf_start)}-"
                     f"{str(args.lpf_every)}-"
                     f"{str(args.cutoff_ratio)}-"
-                    f"{str(args.sc_warmup)}-"
                     f"{str(args.sc_every)}-"
                     f"{str(args.sc_center_lambda)}-"
                     f"{str(args.saliency_anchor)}-"
@@ -327,10 +313,8 @@ def main():
             else:
                 run_name = (
                     f"{args.mode}-{args.iterations}-{args.variance}-"
-                    f"{str(args.lpf_start)}-"
                     f"{str(args.lpf_every)}-"
                     f"{str(args.cutoff_ratio)}-"
-                    f"{str(args.sc_warmup)}-"
                     f"{str(args.sc_every)}-"
                     f"{str(args.sc_center_lambda)}-"
                     f"{str(args.saliency_anchor)}-"
@@ -482,7 +466,6 @@ def main():
                     prune_it=prune_it,
                     prune_ratio=prune_ratio,
                     lpf=args.lpf, 
-                    lpf_start=args.lpf_start, 
                     lpf_every=args.lpf_every, 
                     cutoff_ratio=args.cutoff_ratio,
                     smoothness=args.smoothness,
