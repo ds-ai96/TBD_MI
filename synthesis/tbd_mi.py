@@ -228,7 +228,11 @@ class TBD_MI(BaseSynthesis):
         x_req = x.clone().requires_grad_(True)
 
         logits, _, _ = self.teacher(x_req, current_abs_index, next_relative_index)
-        score = logits.gather(1, targets.view(-1, 1)).sum()
+        if targets.dtype == torch.long and targets.dim() == 1:
+            score = logits.gather(1, targets.view(-1, 1)).sum()
+        else:
+            hard_targets = targets.argmax(dim=1).long()
+            score = logits.gather(1, hard_targets.view(-1, 1)).sum()
 
         grad = torch.autograd.grad(score, x_req, create_graph=True, retain_graph=True)[0]
         sal = grad.abs().amax(dim=1, keepdim=True) # [B, 1, H, W]
