@@ -310,6 +310,8 @@ def main():
                 )
                 if args.reward_after_lpf:
                     run_name += f"-LPF_EDGE-{args.smoothness}-{args.scale_edge}"
+                if args.use_soft_label:
+                    run_name += f"-Soft-{args.soft_label_alpha}"
             else:
                 run_name = (
                     f"{args.mode}-{args.iterations}-{args.variance}-"
@@ -325,6 +327,8 @@ def main():
                 )
                 if args.reward_after_lpf:
                     run_name += f"-LPF_EDGE-{args.smoothness}-{args.scale_edge}"
+                if args.use_soft_label:
+                    run_name += f"-Soft-{args.soft_label_alpha}"
         else:
             raise NotImplementedError
 
