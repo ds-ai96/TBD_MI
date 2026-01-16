@@ -1,7 +1,8 @@
-model/
+models/
 wandb/
 dataset/
 observation/
+kt_dataset/
 
 *.pth
 

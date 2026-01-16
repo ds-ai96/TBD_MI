@@ -216,12 +216,6 @@ def get_args_parser():
         type=str,
         help="name of the project"
     )
-    parser.add_argument(
-        "--log_interval",
-        type=int,
-        default=100,
-        help="interval to log results"
-    )
 
     return parser.parse_args()
 
