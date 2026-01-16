@@ -182,7 +182,7 @@ class KLDiv(nn.Module):
         return kldiv(logits, targets, T=self.T, reduction=self.reduction)
 
 
-def get_teacher(name):
+def get_teacher(name, path):
     teacher_name = {
                     'deit_tiny_16_cifar10': 'deit_tiny_patch16_224',
                     'deit_base_16_cifar10': 'deit_base_patch16_224',
@@ -198,7 +198,7 @@ def get_teacher(name):
         raise NotImplementedError
     teacher = build_model(teacher_name[name], Pretrained=False)
     teacher.reset_classifier(num_classes)
-    teacher.load_state_dict(torch.load(os.path.join(args.model_path,'{}.pth'.format(name))))
+    teacher.load_state_dict(torch.load(os.path.join(path,'{}.pth'.format(name))))
     return teacher
 
 def get_student(name,fine_tuning_method):
@@ -207,7 +207,7 @@ def get_student(name,fine_tuning_method):
                  'deit_tiny_16_cifar100': 'deit_tiny_patch16_224',
                  'deit_base_16_cifar100': 'deit_base_patch16_224',
                  }
-    student=build_model(model_zoo[name], Pretrained=True)
+    student = build_model(model_zoo[name], Pretrained=True)
     dataset_name = name.split('_')[-1]
     if dataset_name == 'cifar10':
         num_classes = 10
@@ -269,12 +269,12 @@ def main():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # Build model
-    model = get_student(args.model,fine_tuning_method='linear')
+    model = get_student(args.model, fine_tuning_method='linear')
     model = model.to(device)
     model.train()
 
-    teacher=get_teacher(args.model)
-    teacher=teacher.to(device)
+    teacher = get_teacher(args.model, args.model_path)
+    teacher = teacher.to(device)
     teacher.eval()
 
     # Build dataloader
