@@ -366,20 +366,27 @@ class TBD_MI(BaseSynthesis):
             elif it in prune_it:
                 prune_ratio_value = prune_ratio[prune_it.index(it)]
 
-                num_spatial = self.num_patches_per_dim * self.num_patches_per_dim
-                top_K = int(num_spatial * (1.0 - prune_ratio_value))
-                top_K = max(1, min(num_spatial, top_K))
+                if self.sc_center:
+                    num_spatial = self.num_patches_per_dim * self.num_patches_per_dim
+                    top_K = int(num_spatial * (1.0 - prune_ratio_value))
+                    top_K = max(1, min(num_spatial, top_K))
 
-                print(f"top_K (Radial Order): {top_K} ### Iteration: {it}")
+                    print(f"top_K (Radial Order): {top_K} ### Iteration: {it}")
 
-                B = inputs.shape[0]
+                    B = inputs.shape[0]
 
-                keep_flat_idx = self.patch_radial_order[:top_K]
-                keep_patch_ids = (keep_flat_idx + 1).long()
+                    keep_flat_idx = self.patch_radial_order[:top_K]
+                    keep_patch_ids = (keep_flat_idx + 1).long()
 
-                cls_col = torch.zeros(B, 1, dtype=torch.long, device=self.device)
-                keep_col = keep_patch_ids.view(1, -1).expand(B, -1)
-                next_relative_index = torch.cat([cls_col, keep_col], dim=1)
+                    cls_col = torch.zeros(B, 1, dtype=torch.long, device=self.device)
+                    keep_col = keep_patch_ids.view(1, -1).expand(B, -1)
+                    next_relative_index = torch.cat([cls_col, keep_col], dim=1)
+                else:
+                    attention_weights = torch.mean(attention_weights[-1], dim=1)[:, 0, :][:, 1:]  # (B,heads,N,N)->(B,p-1)
+                    prune_ratio_value = prune_ratio[prune_it.index(it)]
+                    top_K=int(attention_weights.shape[1] * (1.0 - prune_ratio_value))
+                    print('top_K:',top_K,'###',it)
+                    next_relative_index=get_top_k_relative_indices_including_first(pre_attention=attention_weights, K=top_K).to(self.device)
 
                 inputs_aug = (inputs)
                 current_abs_index_aug = current_abs_index
@@ -437,7 +444,8 @@ class TBD_MI(BaseSynthesis):
                 loss = loss + loss_edge
 
             # Idea 2. Saliency Map Centering
-            if self.sc_center and ((it + 1) % self.sc_every == 0):
+            # if self.sc_center and ((it + 1) % self.sc_every == 0):
+            if self.sc_center and ((it + 1) % self.sc_every == 0) and (it+1 < prune_it[-1]):
                 B = inputs_aug.shape[0]
                 p_sal = self._saliency_p(
                     inputs_aug, targets,
