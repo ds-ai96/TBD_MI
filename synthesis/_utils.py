@@ -107,18 +107,58 @@ class UnlabeledImageDataset(torch.utils.data.Dataset):
         return 'Unlabeled data:\n\troot: %s\n\tdata mount: %d\n\ttransforms: %s'%(self.root, len(self), self.transform)
 
 
+class LabeledImageDataset(torch.utils.data.Dataset):
+    """Dataset that returns (image, target) pairs."""
+    def __init__(self, root, targets, transform=None):
+        self.root = os.path.abspath(root)
+        self.images = _collect_all_images(self.root)
+        self.images.sort()  # ensure consistent ordering with saved targets
+        self.targets = targets
+        self.transform = transform
+        
+        assert len(self.images) == len(self.targets), \
+            f"Number of images ({len(self.images)}) != number of targets ({len(self.targets)})"
+
+    def __getitem__(self, idx):
+        img = Image.open(self.images[idx])
+        if self.transform:
+            img = self.transform(img)
+        target = self.targets[idx]
+        return img, target
+
+    def __len__(self):
+        return len(self.images)
+
+    def __repr__(self):
+        return 'Labeled data:\n\troot: %s\n\tdata mount: %d\n\ttransforms: %s'%(self.root, len(self), self.transform)
+
+
 class ImagePool(object):
     def __init__(self, root):
         self.root = os.path.abspath(root)
         print(self.root)
         os.makedirs(self.root, exist_ok=True)
         self._idx = 0
+        self._targets = []  # store all targets
 
     def add(self, imgs, targets=None):
         save_image_batch(imgs, os.path.join( self.root, "%d.png"%(self._idx) ), pack=False)
         self._idx+=1
+        
+        # Store targets if provided
+        if targets is not None:
+            if isinstance(targets, torch.Tensor):
+                # Handle soft labels (one-hot) by converting to hard labels
+                if targets.dim() > 1:
+                    targets = targets.argmax(dim=1)
+                targets = targets.cpu().numpy()
+            if isinstance(targets, np.ndarray):
+                targets = targets.tolist()
+            self._targets.extend(targets)
 
     def get_dataset(self, transform=None, labeled=True):
+        if labeled and len(self._targets) > 0:
+            return LabeledImageDataset(self.root, self._targets, transform=transform)
         return UnlabeledImageDataset(self.root, transform=transform)
 
 class DataIter(object):

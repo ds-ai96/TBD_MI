@@ -72,33 +72,86 @@ class Normalizer(object):
 
 
 def build_dataset(model_type,dataset_type,calib_batchsize=32,train_aug=False,keep_zero=False,train_inverse=False,dataset_path=""):
-    if model_type == "deit":
-        crop_pct = 0.875
-    elif model_type == 'vit':
-        crop_pct = 0.9
-    elif model_type == 'swin':
-        crop_pct = 0.9
-    else:
-        raise NotImplementedError
-    mean,std=NORMALIZE_DICT[dataset_type]['mean'],NORMALIZE_DICT[dataset_type]['std']
+    if model_type in ["deit", "vit", "swin"]:
+        input_size = 224
+        interpolation = "bicubic"
 
-    train_transform = build_transform(input_size=224, interpolation="bicubic",mean=mean, std=std, crop_pct=crop_pct,aug=train_aug,keep_zero=keep_zero,inverse_img=train_inverse)
-    val_transform = build_transform(input_size=224, interpolation="bicubic",mean=mean, std=std, crop_pct=crop_pct,aug=False,keep_zero=keep_zero,inverse_img=False)
-    normalizer=Normalizer(**NORMALIZE_DICT[dataset_type])
+        if model_type == "deit":
+            crop_pct = 0.875
+        elif model_type == 'vit':
+            crop_pct = 0.9
+        elif model_type == 'swin':
+            crop_pct = 0.9
+        else:
+            raise NotImplementedError
+    
+    elif model_type == "cnn":
+        if dataset_type in ["cifar10","cifar100"]:
+            input_size = 32
+            crop_pct = 1.0
+            interpolation = "bilinear"
+        elif dataset_type in "imagenet":
+            input_size = 224
+            crop_pct = 0.875
+            interpolation = "bicubic"
+        else:
+            raise NotImplementedError
+
+    mean, std = NORMALIZE_DICT[dataset_type]['mean'], NORMALIZE_DICT[dataset_type]['std']
+
+    train_transform = build_transform(
+        input_size=input_size,
+        interpolation=interpolation,
+        mean=mean,
+        std=std,
+        crop_pct=crop_pct,
+        aug=train_aug,
+        keep_zero=keep_zero,
+        inverse_img=train_inverse
+    )
+
+    val_transform = build_transform(
+        input_size=input_size,
+        interpolation=interpolation,
+        mean=mean,
+        std=std,
+        crop_pct=crop_pct,
+        aug=False,
+        keep_zero=keep_zero,
+        inverse_img=False
+    )
+
+    normalizer = Normalizer(**NORMALIZE_DICT[dataset_type])
+
     # Data
     if dataset_type=='cifar10':
-        train_dataset=torchvision.datasets.CIFAR10(root=dataset_path, train=True, download=True,transform=train_transform)
-        val_dataset=torchvision.datasets.CIFAR10(root=dataset_path, train=False,download=False, transform=val_transform)
+        train_dataset = torchvision.datasets.CIFAR10(
+            root=dataset_path, train=True, download=True,transform=train_transform
+        )
+        val_dataset = torchvision.datasets.CIFAR10(
+            root=dataset_path, train=False, download=False, transform=val_transform
+        )
         num_classes=10
+
     elif dataset_type=='cifar100':
-        train_dataset = torchvision.datasets.CIFAR100(root=dataset_path, train=True,download=True, transform=train_transform)
-        val_dataset = torchvision.datasets.CIFAR100(root=dataset_path, train=False,download=False, transform=val_transform)
+        train_dataset = torchvision.datasets.CIFAR100(
+            root=dataset_path, train=True, download=True, transform=train_transform
+        )
+        val_dataset = torchvision.datasets.CIFAR100(
+            root=dataset_path, train=False, download=False, transform=val_transform
+        )
         num_classes = 100
+
     elif dataset_type=='imagenet':
-        val_dataset = torchvision.datasets.ImageNet(root=dataset_path, split='val', transform=val_transform)
+        train_dataset = None
+        val_dataset = torchvision.datasets.ImageNet(
+            root=dataset_path, split='val', transform=val_transform
+        )
         num_classes = 1000
+
     else:
         raise NotImplementedError
+
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=128,
@@ -106,7 +159,10 @@ def build_dataset(model_type,dataset_type,calib_batchsize=32,train_aug=False,kee
         num_workers=4,
         pin_memory=True,
     )
-    if dataset_type!='imagenet':
+
+    if train_dataset is None:
+        train_loader = None
+    else:
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=calib_batchsize,
@@ -115,10 +171,8 @@ def build_dataset(model_type,dataset_type,calib_batchsize=32,train_aug=False,kee
             pin_memory=True,
             drop_last=True,
         )
-    else:
-        train_loader=None
     
-    return train_loader, val_loader,num_classes,train_transform,val_transform,normalizer
+    return train_loader, val_loader, num_classes, train_transform, val_transform, normalizer
 
 
 def build_transform(input_size=224, interpolation="bicubic",

@@ -1,6 +1,7 @@
 models/
 wandb/
 dataset/
+dataset_quant_cnn/
 observation/
 kt_dataset/
 

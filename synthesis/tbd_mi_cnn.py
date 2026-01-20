@@ -93,7 +93,7 @@ def jitter_and_flip(inputs_jit, lim=1./8., do_flip=True):
 class TBD_MI_CNN(BaseSynthesis):
     def __init__(
         self, teacher, teacher_name, student, num_classes,
-        img_shape=(3, 224, 224),patch_size=16, iterations=2000, lr_g=0.25,
+        img_shape=(3, 224, 224), iterations=2000, lr_g=0.25,
         synthesis_batch_size=128, sample_batch_size=128, adv=0.0, bn=0,
         oh=1,tv1=0.0, tv2=1e-5, l2=0.0, save_dir='', transform=None,
         normalizer=None, device='cpu', bnsource='resnet50v2',init_dataset=None
@@ -103,7 +103,6 @@ class TBD_MI_CNN(BaseSynthesis):
 
         self.save_dir = save_dir
         self.img_size = img_shape
-        self.patch_size=patch_size
         self.iterations = iterations
         self.lr_g = lr_g
         self.normalizer = normalizer
@@ -169,7 +168,7 @@ class TBD_MI_CNN(BaseSynthesis):
 
         return rad2.expand(B, 1, H, W)
 
-    def _saliency_p(self, x, targets, current_abs_index, next_relative_index):
+    def _saliency_p(self, x, targets):
         """
         teacher 기준으로 saliency map을 확률분포 p(i,j)로 반환함.
         x: [B, 3, H, W], requires_grad=False 텐서임
@@ -177,7 +176,7 @@ class TBD_MI_CNN(BaseSynthesis):
         # 이 함수 내에서 requires_grad=True 텐서를 만들어서 사용함.
         x_req = x.clone().requires_grad_(True)
 
-        logits, _, _ = self.teacher(x_req, current_abs_index, next_relative_index)
+        logits = self.teacher(x_req)
         if targets.dtype == torch.long and targets.dim() == 1:
             score = logits.gather(1, targets.view(-1, 1)).sum()
         else:
@@ -209,7 +208,7 @@ class TBD_MI_CNN(BaseSynthesis):
                    prune_it=[-1], prune_ratio=[0],
                    lpf=False, lpf_every=10, cutoff_ratio=0.8,
                    sc_center=False, sc_every=50, sc_center_lambda=0.1,
-                   saliency_anchor='c', scale_edge=0.0,
+                   saliency_anchor='c',
                    use_soft_label=False, soft_label_alpha=0.6
         ):
 
@@ -376,12 +375,6 @@ class TBD_MI_CNN(BaseSynthesis):
             loss_l2 = torch.norm(inputs, 2)
 
             total_loss = self.bn * loss_bn + self.oh * loss_oh + self.adv * loss_adv + self.tv1 * loss_tv1 + self.tv2*loss_tv2 + self.l2 * loss_l2
-            
-            ### TODO: LPF reward loss (not working)
-            if scale_edge > 0.0:
-                synth_edges = self._sobel_filter(inputs_aug.mean(dim=1, keepdim=True)) # [B, 1, H, W] grayscale edge
-                loss_edge = scale_edge * F.mse_loss(synth_edges, pre_synth_edges)
-                total_loss = total_loss + loss_edge
 
             # Idea 2. Saliency Map Centering
             # if self.sc_center and ((it + 1) % self.sc_every == 0):
@@ -407,7 +400,7 @@ class TBD_MI_CNN(BaseSynthesis):
         if self.normalizer:
             best_inputs = self.normalizer(best_inputs, True)
         if len(prune_ratio)==1 and prune_ratio[0]==0: #add non-masked image
-            self.data_pool.add( best_inputs )
+            self.data_pool.add( best_inputs, targets=targets )
 
         def cumulative_mul(lst):
             current_mul = 1
@@ -421,7 +414,7 @@ class TBD_MI_CNN(BaseSynthesis):
         masked_best_inputs = best_inputs * final_mask
 
         if not(len(prune_ratio)==1 and prune_ratio[0]==0): #add masked image
-            self.data_pool.add( masked_best_inputs )
+            self.data_pool.add( masked_best_inputs, targets=targets )
 
         dst = self.data_pool.get_dataset(transform=self.transform)
         if self.init_dataset is not None:
