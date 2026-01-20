@@ -268,7 +268,6 @@ def get_args_parser():
         help="learning rate for QAT"
     )
 
-
     # Logging
     parser.add_argument(
         "--wandb",
@@ -297,31 +296,6 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.use_deterministic_algorithms(True, warn_only=True)
 
-# TODO: 없이 실행해보고 추가하기
-# def _adjust_classifier_if_needed(model: nn.Module, num_classes: int) -> nn.Module:
-#     """
-#     Safety guard: if downstream expects a different num_classes than the loaded model head,
-#     overwrite the head with a new Linear layer. (Usually not needed if ptcv_name matches dataset.)
-#     """
-#     # pytorchcv commonly uses `output` for classifier (e.g., ResNet), but not guaranteed
-#     if hasattr(model, "output") and isinstance(model.output, nn.Linear):
-#         if model.output.out_features != num_classes:
-#             model.output = nn.Linear(model.output.in_features, num_classes)
-#         return model
-
-#     # Common fallbacks
-#     if hasattr(model, "fc") and isinstance(model.fc, nn.Linear):
-#         if model.fc.out_features != num_classes:
-#             model.fc = nn.Linear(model.fc.in_features, num_classes)
-#         return model
-
-#     if hasattr(model, "classifier") and isinstance(model.classifier, nn.Linear):
-#         if model.classifier.out_features != num_classes:
-#             model.classifier = nn.Linear(model.classifier.in_features, num_classes)
-#         return model
-
-#     return model
-
 def build_cnn_model(model_key, num_classes):
     config = MODEL_CONFIGS[model_key]
 
@@ -333,24 +307,29 @@ def build_cnn_model(model_key, num_classes):
     return model
 
 def quantize_model(model, w_bit, a_bit):
-    def _convert(model):
-        if isinstance(model, nn.Conv2d):
-            quant_mod = QuantConv2d(weight_bit=w_bit)
-            quant_mod.set_param(model)
-            return quant_mod
-        if isinstance(model, nn.Linear):
-            quant_mod = QuantLinear(weight_bit=w_bit)
-            quant_mod.set_param(model)
-            return quant_mod
-        if isinstance(model, (nn.ReLU, nn.ReLU6)):
-            return nn.Sequential(model, QuantAct(activation_bit=a_bit))
+    if isinstance(model, nn.Conv2d):
+        quant_mod = QuantConv2d(weight_bit=w_bit)
+        quant_mod.set_param(model)
+        return quant_mod
+    if isinstance(model, nn.Linear):
+        quant_mod = QuantLinear(weight_bit=w_bit)
+        quant_mod.set_param(model)
+        return quant_mod
+    if isinstance(model, (nn.ReLU, nn.ReLU6)):
+        return nn.Sequential(*[model, QuantAct(activation_bit=a_bit)])
+    if isinstance(model, nn.Sequential):
+        mods = []
+        for _, m in model.named_children():
+            mods.append(quantize_model(m, w_bit, a_bit))
+        return nn.Sequential(*mods)
 
-        q_model = copy.deepcopy(model)
-        for name, child in model.named_children():
-            setattr(q_model, name, _convert(child))
-        return q_model
+    q_model = copy.deepcopy(model)
+    for attr in dir(model):
+        mod = getattr(model, attr)
+        if isinstance(mod, nn.Module) and 'norn' not in attr:
+            setattr(q_model, attr, quantize_model(mod, w_bit, a_bit))
 
-    return _convert(model)
+    return q_model
 
 # TODO: 이거 왜 필요하지??
 @torch.no_grad()
@@ -408,43 +387,28 @@ def compute_loss_fa(activation_student, activation_teacher, lam):
 
 
 class ActivationHooks:
+    """Activation hooks for capturing intermediate activations."""
     def __init__(self):
-        self.activation_teacher = []
-        self.activation_student = []
+        self.activations = []
         self.handles = []
     
-    def hook_teacher(self, module, _input, output):
-        self.activation_teacher.append(channel_attention(output.clone()))
-    
-    def hook_student(self, module, _input, output):
-        self.activation_student.append(channel_attention(output.clone()))
+    def hook(self, module, _input, output):
+        self.activations.append(channel_attention(output.clone()))
     
     def clear(self):
-        self.activation_teacher.clear()
-        self.activation_student.clear()
+        self.activations.clear()
     
-    def register_hooks(self, teacher_model, student_model):
+    def register_hooks(self, model):
         """Register hooks on ResUnit, DwsConvBlock, LinearBottleneck modules."""
-        for m in teacher_model.modules():
+        for m in model.modules():
             if isinstance(m, ResUnit):
-                h = m.body.register_forward_hook(self.hook_teacher)
+                h = m.body.register_forward_hook(self.hook)
                 self.handles.append(h)
             elif isinstance(m, DwsConvBlock):
-                h = m.pw_conv.bn.register_forward_hook(self.hook_teacher)
+                h = m.pw_conv.bn.register_forward_hook(self.hook)
                 self.handles.append(h)
             elif isinstance(m, LinearBottleneck):
-                h = m.conv3.register_forward_hook(self.hook_teacher)
-                self.handles.append(h)
-        
-        for m in student_model.modules():
-            if isinstance(m, ResUnit):
-                h = m.body.register_forward_hook(self.hook_student)
-                self.handles.append(h)
-            elif isinstance(m, DwsConvBlock):
-                h = m.pw_conv.bn.register_forward_hook(self.hook_student)
-                self.handles.append(h)
-            elif isinstance(m, LinearBottleneck):
-                h = m.conv3.register_forward_hook(self.hook_student)
+                h = m.conv3.register_forward_hook(self.hook)
                 self.handles.append(h)
     
     def remove_hooks(self):
@@ -452,12 +416,12 @@ class ActivationHooks:
             h.remove()
         self.handles.clear()
 
+
 def qat_training(
-    q_model, teacher, train_loader, val_loader, device, epochs,
+    q_model, teacher, train_loader, val_loader, criterion, device, epochs,
     lr, weight_decay, temperature, alpha, lambda_ce, lambda_fa
 ):
     teacher.eval()
-    q_model.train()
     
     # Loss functions
     kl_loss_fn = nn.KLDivLoss(reduction='batchmean').to(device)
@@ -466,38 +430,37 @@ def qat_training(
     # Optimizer
     optimizer = torch.optim.Adam(q_model.parameters(), lr=lr, weight_decay=weight_decay)
     
-    # Register activation hooks for feature alignment
-    hooks = ActivationHooks()
-    hooks.register_hooks(teacher, q_model)
-    
+    # Register activation hooks for feature alignment (separate instances for teacher and student)
+    teacher_hooks = ActivationHooks()
+    student_hooks = ActivationHooks()
+    teacher_hooks.register_hooks(teacher)
+    student_hooks.register_hooks(q_model)
+
     for epoch in range(epochs):
+        if epoch < 4:
+            unfreeze_model(q_model)
+        else:
+            freeze_model(q_model)
+
         q_model.train()
         for x, labels in train_loader:
             x = x.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
-            
-            # Clear activation buffers
-            hooks.clear()
-            
-            # Teacher forward (no grad)
+
+            teacher_hooks.clear()
+            student_hooks.clear()
             with torch.no_grad():
                 t_logits = teacher(x)
-            
-            # Student forward (hooks will capture activations)
-            # Need to re-run teacher with hooks to capture activations
-            hooks.clear()
-            _ = teacher(x)  # This will populate activation_teacher
-            s_logits = q_model(x)  # This will populate activation_student
+            s_logits = q_model(x)  # This will populate student activations
             
             # Compute losses
             loss_kl, loss_ce = loss_fn_kd(
                 s_logits, labels, t_logits, temperature, alpha, kl_loss_fn, ce_loss_fn
             )
             loss_fa = compute_loss_fa(
-                hooks.activation_student, hooks.activation_teacher, lambda_fa
+                student_hooks.activations, teacher_hooks.activations, lambda_fa
             )
             
-            # Total loss: loss_kl + lambda_ce * loss_ce + loss_fa
             loss = loss_kl + lambda_ce * loss_ce + loss_fa
             
             optimizer.zero_grad()
@@ -515,7 +478,8 @@ def qat_training(
                   f"val_loss: {val_loss:.4f} | Prec@1: {val_prec1:.2f}% | Prec@5: {val_prec5:.2f}%")
     
     # Cleanup hooks
-    hooks.remove_hooks()
+    teacher_hooks.remove_hooks()
+    student_hooks.remove_hooks()
 
 
 @torch.no_grad()
@@ -577,7 +541,7 @@ def main():
     # cfg = Config(args.w_bit, args.a_bit)
 
     # Build FP models (teacher/student)
-    model = build_cnn_model(args.model, model_config["num_classes"]).to(device).eval()
+    model = build_cnn_model(args.model, model_config["num_classes"]).to(device)
     teacher = build_cnn_model(args.model, model_config["num_classes"]).to(device).eval()
 
     if model_config["dataset"] == "imagenet":
@@ -672,10 +636,23 @@ def main():
 
             q_model = quantize_model(model, w_bit=args.w_bit, a_bit=args.a_bit).to(device)
 
-            calibrate_act_range(q_model, qat_loader, device, num_batches=args.calib_batchsize)
+            def freeze_bn(m):
+                if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.SyncBatchNorm)):
+                    m.eval()
+            q_model.apply(freeze_bn)
+
+            unfreeze_model(q_model)
+            q_model.eval()
+            calibrate_act_range(q_model, qat_loader, device, num_batches=20)
             freeze_model(q_model)
 
-            # SynQ-style QAT training
+            mins, maxs = [], []
+            for m in q_model.modules():
+                if isinstance(m, QuantAct):
+                    mins.append(float(m.x_min))
+                    maxs.append(float(m.x_max))
+            print("After calib:", (min(mins), max(maxs)))
+
             qat_training(
                 q_model=q_model, teacher=teacher,
                 train_loader=qat_loader, val_loader=val_loader,
@@ -709,7 +686,7 @@ def main():
         # Validate the quantized model
         print("Validating...")
         val_loss, val_prec1, val_prec5 = validate(
-            args, val_loader, model, criterion, device
+            args, val_loader, q_model, criterion, device
         )
 
         if args.wandb:
