@@ -142,9 +142,19 @@ class ImagePool(object):
         self._targets = []  # store all targets
 
     def add(self, imgs, targets=None):
-        save_image_batch(imgs, os.path.join( self.root, "%d.png"%(self._idx) ), pack=False)
-        self._idx+=1
+        # TODO: Original
+        # save_image_batch(imgs, os.path.join( self.root, "%d.png"%(self._idx) ), pack=False)
+        # self._idx+=1
         
+        # TODO: Codex
+        if isinstance(imgs, torch.Tensor):
+            imgs = (imgs.detach().clamp(0, 1).cpu().numpy() * 255).astype('uint8')
+
+        for img in imgs:
+            img_path = os.path.join(self.root, f"{self._idx:08d}.png")
+            Image.fromarray(img.transpose(1, 2, 0)).save(img_path)
+            self._idx += 1
+
         # Store targets if provided
         if targets is not None:
             if isinstance(targets, torch.Tensor):

@@ -443,6 +443,8 @@ def qat_training(
             freeze_model(q_model)
 
         q_model.train()
+        epoch_loss_kl, epoch_loss_ce, epoch_loss_fa = 0.0, 0.0, 0.0
+        num_batches = 0
         for x, labels in train_loader:
             x = x.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
@@ -466,9 +468,15 @@ def qat_training(
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            
+            epoch_loss_kl += loss_kl.item()
+            epoch_loss_ce += loss_ce.item()
+            epoch_loss_fa += loss_fa.item()
+            num_batches += 1
         
-        print(f"[QAT] Epoch {epoch+1}/{epochs} | loss_kl: {loss_kl.item():.4f} | "
-              f"loss_ce: {loss_ce.item():.4f} | loss_fa: {loss_fa.item():.4f}")
+        if num_batches > 0:
+            print(f"[QAT] Epoch {epoch+1}/{epochs} | loss_kl: {epoch_loss_kl/num_batches:.4f} | "
+                  f"loss_ce: {epoch_loss_ce/num_batches:.4f} | loss_fa: {epoch_loss_fa/num_batches:.4f}")
         
         # Validation every N epochs
         if (epoch + 1) % 10 == 0:
