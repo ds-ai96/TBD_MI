@@ -4,7 +4,7 @@ dataset/
 dataset_quant_cnn/
 observation/
 kt_dataset/
-
+ipynbs/
 *.pth
 
 # Byte-compiled / optimized / DLL files

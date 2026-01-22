@@ -342,6 +342,7 @@ def calibrate_act_range(q_model, calib_loader, device, num_batches):
         cnt += 1
         if cnt >= num_batches:
             break
+    return cnt
 
 def freeze_model(model):
     if isinstance(model, QuantAct):
@@ -477,6 +478,8 @@ def qat_training(
         if num_batches > 0:
             print(f"[QAT] Epoch {epoch+1}/{epochs} | loss_kl: {epoch_loss_kl/num_batches:.4f} | "
                   f"loss_ce: {epoch_loss_ce/num_batches:.4f} | loss_fa: {epoch_loss_fa/num_batches:.4f}")
+        else:
+            print(f"[QAT] Warning: Epoch {epoch+1}/{epochs} has 0 batches! Check that train_loader has data.")
         
         # Validation every N epochs
         if (epoch + 1) % 10 == 0:
@@ -631,15 +634,26 @@ def main():
 
         dst = synthesizer.data_pool.get_dataset(transform=train_transform)
 
+        dataset_size = len(dst)
+        if dataset_size == 0:
+            raise ValueError("Synthetic dataset is empty; cannot run calibration or QAT.")
+        effective_calib_bs = min(args.calib_batchsize, dataset_size)
+        if effective_calib_bs < args.calib_batchsize:
+            print(
+                f"[QAT] Adjusting calib batch size from {args.calib_batchsize} to {effective_calib_bs} "
+                f"(dataset size: {dataset_size})."
+            )
+
         # Quantization
         if args.quant_mode == "qat":
+            # TODO: 여기에도 effective_calib_bs 인지 모르겠음
             qat_loader = DataLoader(
                 dst,
-                batch_size=args.calib_batchsize,
+                batch_size=effective_calib_bs,
                 shuffle=True,
                 num_workers=0,
                 pin_memory=True,
-                drop_last=True
+                drop_last=False  # Changed to False to use all available data
             )
 
             q_model = quantize_model(model, w_bit=args.w_bit, a_bit=args.a_bit).to(device)
@@ -651,7 +665,11 @@ def main():
 
             unfreeze_model(q_model)
             q_model.eval()
-            calibrate_act_range(q_model, qat_loader, device, num_batches=20)
+            calib_batches = min(20, len(qat_loader))
+            if calib_batches == 0:
+                raise ValueError("Calibration loader has no batches; check dataset size and batch size.")
+            calibrate_act_range(q_model, qat_loader, device, num_batches=calib_batches)
+            
             freeze_model(q_model)
 
             mins, maxs = [], []
@@ -682,7 +700,7 @@ def main():
 
         calib_loader = DataLoader(
             dst,
-            batch_size=args.calib_batchsize,
+            batch_size=effective_calib_bs,
             shuffle=False,
             num_workers=0,
             pin_memory=True,

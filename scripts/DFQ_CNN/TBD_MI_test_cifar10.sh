@@ -11,6 +11,7 @@ python main_quant_cnn.py \
     --datapool /home/jener05458/src/EdgeMI/TBD_MI/dataset_quant_cnn/ \
     --iterations 4000 \
     --synthetic_bs 32 \
+    --num_runs 10 \
     --quant_mode "qat" \
     --w_bit 4 \
     --a_bit 4 \

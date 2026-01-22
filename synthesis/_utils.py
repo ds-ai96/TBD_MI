@@ -183,4 +183,3 @@ class DataIter(object):
             self._iter = iter(self.dataloader)
             data = next( self._iter )
         return data
-
