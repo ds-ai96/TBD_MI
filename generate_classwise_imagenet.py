@@ -43,13 +43,6 @@ def parse_args() -> argparse.Namespace:
         default=[0],
         help="Prune ratio for each iteration specified by --prune_it.",
     )
-    parser.add_argument("--use_soft_label", action="store_true", help="Use soft labels during synthesis.")
-    parser.add_argument(
-        "--soft_label_alpha",
-        type=float,
-        default=0.9,
-        help="Alpha value when generating soft labels (probability assigned to the target class).",
-    )
     parser.add_argument(
         "--num_classes",
         type=int,
@@ -121,8 +114,6 @@ def main() -> None:
             num_patches=patch_num,
             prune_it=args.prune_it,
             prune_ratio=args.prune_ratio,
-            use_soft_label=args.use_soft_label,
-            soft_label_alpha=args.soft_label_alpha,
         )
 
 
