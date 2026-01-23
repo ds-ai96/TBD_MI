@@ -17,6 +17,82 @@ from .hooks import DeepInversionHook
 from ._utils import UnlabeledImageDataset, DataIter, ImagePool
 
 # Idea 1. Low-pass filter
+def Bilateral_loss_pass_filter(images, kernel_size=5, sigma_s=2.0, sigma_r=1.0):
+    """
+     Differentiable bilateral filter (local window version)
+
+     Args:
+        images: Tensor [B, C, H, W]
+        kernel_size: spatial window size (odd)
+        sigma_s: spatial sigma
+        sigma_r: range_sigma
+    """
+
+    B, C, H, W = images.shape
+    pad = kernel_size // 2
+
+    coords = torch.arange(kernel_size, device=images.device) - pad
+    yy, xx = torch.meshgrid(coords, coords, indexing="ij")
+    spatial_kernel = torch.exp(-(xx*2 + yy*2) / (2 * sigma_s**2))
+    spatial_kernel = spatial_kernel.view(1, 1, kernel_size, kernel_size)
+
+    patches = F.unfold(
+        images,
+        kernel_size=kernel_size,
+        padding=pad
+    ) # [B, C*K*K, H*W]
+
+    patches = patches.view(
+        B, C, kernel_size * kernel_size, H * W
+    ) # [B, C, K*K, H*W]
+
+    center = images.view(B, C, 1, H * W) # [B, C, 1, H*W]
+
+    range_weight = torch.exp(
+        -((patches - center) ** 2) / (2 * sigma_r ** 2)
+    )
+
+    spatial_weight = spatial_kernel.view(1, 1, -1, 1)
+    weights = spatial_weight * range_weight
+
+    weights = weights / (weights.sum(dim=2, keepdim=True) + 1e-8)
+
+    filtered = (weights * patches).sum(dim=2) # [B, C, H*W]
+    filtered = filtered.view(B, C, H, W)
+
+    return filtered
+
+def Gaussian_low_pass_filter(images, cutoff_ratio=0.8):
+    B, C, H, W =images.shape
+
+    fft_images = torch.fft_fftshift(
+        torch.fft.fft2(images, dim=(-2, -1)),
+        dim=(-2, -1)
+    )
+
+    Y, X = torch.meshgrid(
+        torch.arange(H, device=images.device),
+        torch.arange(W, device=images.device),
+        indexing='ij'
+    )
+
+    freq_grid = torch.stack([Y - H // 2, X - W // 2], dim=-1).float()
+    distance = torch.norm(freq_grid, dim=-1)
+
+    max_dist = distance.max()
+    sigma_f = cutoff_ratio * max_dist
+
+    gaussian_mask = torch.exp(-(distance ** 2) / (2 * sigma_f ** 2))
+    gaussian_mask = gaussian_mask[None, None, :, :] # broadcast
+
+    filtered_fft = fft_images * gaussian_mask
+    filtered = torch.fft.ifft2(
+        torch.fft.ifftshift(filtered_fft, dim=(-2, -1)),
+        dim=(-2, -1)
+    ).real
+
+    return filtered
+
 def low_pass_filter(images, cutoff_ratio=0.8):
     B, C, H, W = images.shape
     fft_images = torch.fft.fftshift(torch.fft.fft2(images, dim=(-2, -1)), dim=(-2, -1))
@@ -250,15 +326,22 @@ class TBD_MI(BaseSynthesis):
 
     def synthesize(self, targets=None,
                    num_patches=197, prune_it=[-1], prune_ratio=[0],
-                   lpf=False, lpf_every=10, cutoff_ratio=0.8,
+                   lpf=False, lpf_type="cutoff", lpf_every=10, cutoff_ratio=0.8,
+                   bi_kernel=5, bi_sigma_s=2.0, bi_sigma_r=1.0,
                    sc_center=False, sc_every=50, sc_center_lambda=0.1,
                    saliency_anchor='c', scale_edge=0.0,
                    use_soft_label=False, soft_label_alpha=0.6):
 
         # Idea 1. Low-pass Filter
         self.lpf = lpf
+        self.lpf_type = lpf_type
         self.lpf_every = lpf_every
         self.cutoff_ratio = cutoff_ratio
+
+        ### Bilateral Filter
+        self.bi_kernel = bi_kernel
+        self.bi_sigma_s = bi_sigma_s
+        self.bi_sigma_r = bi_sigma_r
 
         # Idea 2. Saliency Map Centering
         self.sc_center = sc_center
@@ -359,7 +442,14 @@ class TBD_MI(BaseSynthesis):
 
                 # Idea 1. Low-pass Filter
                 if self.lpf and ((it + 1) % self.lpf_every == 0):
-                    inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    if self.lpf_type == "gaussian":
+                        inputs_aug = Gaussian_low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    elif self.lpf_type == "cutoff":
+                        inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    elif self.lpf_type == "bilateral":
+                        inputs_aug = Bilateral_loss_pass_filter(inputs_aug, kernel_size=self.bi_kernel, sigma_s=self.bi_sigma_s, sigma_r=self.bi_sigma_r)
+                    else:
+                        raise ValueError("Invalid lpf_type")
 
                 t_out, attention_weights, _ = self.teacher(inputs_aug, current_abs_index_aug,next_relative_index)
 
@@ -393,7 +483,14 @@ class TBD_MI(BaseSynthesis):
 
                 # Idea 1. Low-pass Filter
                 if self.lpf and ((it + 1) % self.lpf_every == 0):
-                    inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    if self.lpf_type == "gaussian":
+                        inputs_aug = Gaussian_low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    elif self.lpf_type == "cutoff":
+                        inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    elif self.lpf_type == "bilateral":
+                        inputs_aug = Bilateral_loss_pass_filter(inputs_aug, kernel_size=self.bi_kernel, sigma_s=self.bi_sigma_s, sigma_r=self.bi_sigma_r)
+                    else:
+                        raise ValueError("Invalid lpf_type")
 
                 t_out, attention_weights, current_abs_index = self.teacher(inputs_aug, current_abs_index_aug,next_relative_index)
 
@@ -406,9 +503,14 @@ class TBD_MI(BaseSynthesis):
 
                 # Idea 1. Low-pass Filter
                 if self.lpf and ((it + 1) % self.lpf_every == 0):
-                    if scale_edge > 0.0:
-                        pre_synth_edges = self._sobel_filter(inputs_aug.mean(dim=1, keepdim=True))
-                    inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    if self.lpf_type == "gaussian":
+                        inputs_aug = Gaussian_low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    elif self.lpf_type == "cutoff":
+                        inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    elif self.lpf_type == "bilateral":
+                        inputs_aug = Bilateral_loss_pass_filter(inputs_aug, kernel_size=self.bi_kernel, sigma_s=self.bi_sigma_s, sigma_r=self.bi_sigma_r)
+                    else:
+                        raise ValueError("Invalid lpf_type")
 
                 t_out,attention_weights,_ = self.teacher(inputs_aug,current_abs_index_aug,next_relative_index)
 

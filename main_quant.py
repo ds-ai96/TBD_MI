@@ -119,6 +119,13 @@ def get_args_parser():
         help="use low-pass filtering"
     )
     parser.add_argument(
+        "--lpf_type",
+        type=str,
+        default="cutoff",
+        choices=["gaussian", "cutoff", "bilateral"],
+        help="type of low-pass filtering"
+    )
+    parser.add_argument(
         "--lpf_every",
         type=int,
         default=100,
@@ -129,6 +136,25 @@ def get_args_parser():
         type=float,
         default=0.5,
         help="cutoff ratio for low-pass filtering"
+    )
+    ##### For Bilateral Filter
+    parser.add_argument(
+        "--bi_kernel",
+        type=int,
+        default=5,
+        help="kernel size for bilateral filter"
+    )
+    parser.add_argument(
+        "--bi_sigma_s",
+        type=float,
+        default=2.0,
+        help="sigma_s for bilateral filter"
+    )
+    parser.add_argument(
+        "--bi_sigma_r",
+        type=float,
+        default=1.0,
+        help="sigma_r for bilateral filter"
     )
 
     ### Idea 2. Saliency Map Centering
