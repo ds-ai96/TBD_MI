@@ -65,7 +65,7 @@ def Bilateral_loss_pass_filter(images, kernel_size=5, sigma_s=2.0, sigma_r=1.0):
 def Gaussian_low_pass_filter(images, cutoff_ratio=0.8):
     B, C, H, W =images.shape
 
-    fft_images = torch.fft_fftshift(
+    fft_images = torch.fft.fftshift(
         torch.fft.fft2(images, dim=(-2, -1)),
         dim=(-2, -1)
     )

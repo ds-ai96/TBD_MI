@@ -49,6 +49,45 @@ def parse_args() -> argparse.Namespace:
         default=1000,
         help="Total number of target classes to synthesize (defaults to ImageNet-1k).",
     )
+    
+    # Idea 1. Low-pass filter
+    parser.add_argument(
+        "--lpf",
+        action="store_true",
+        help="Apply low-pass filter to the input image.",
+    )
+    parser.add_argument(
+        "--lpf_type",
+        type=str,
+        default="gaussian",
+        choices=["gaussian", "cutoff", "bilateral"],
+        help="Type of low-pass filter to use.",
+    )
+    parser.add_argument(
+        "--lpf_every",
+        type=int,
+        default=50,
+        help="Apply low-pass filter every n iterations.",
+    )
+    parser.add_argument(
+        "--cutoff_ratio",
+        type=float,
+        default=0.5,
+        help="Cutoff ratio for the low-pass filter.",
+    )
+
+    # Idea 3. Soft label
+    parser.add_argument(
+        "--use_soft_label",
+        action="store_true",
+        help="Use soft label for the student model.",
+    )
+    parser.add_argument(
+        "--soft_label_alpha",
+        type=float,
+        default=0.9,
+        help="Alpha value for the soft label.",
+    )
     return parser.parse_args()
 
 
@@ -114,6 +153,10 @@ def main() -> None:
             num_patches=patch_num,
             prune_it=args.prune_it,
             prune_ratio=args.prune_ratio,
+            lpf=args.lpf,
+            lpf_type=args.lpf_type,
+            lpf_every=args.lpf_every,
+            cutoff_ratio=args.cutoff_ratio,
         )
 
 

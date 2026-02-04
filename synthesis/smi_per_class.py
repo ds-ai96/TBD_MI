@@ -14,6 +14,36 @@ from ._utils import ImagePool, UnlabeledImageDataset, DataIter  # type: ignore
 from .base import BaseSynthesis
 from .hooks import DeepInversionHook
 
+def Gaussian_low_pass_filter(images, cutoff_ratio=0.8):
+    B, C, H, W =images.shape
+
+    fft_images = torch.fft.fftshift(
+        torch.fft.fft2(images, dim=(-2, -1)),
+        dim=(-2, -1)
+    )
+
+    Y, X = torch.meshgrid(
+        torch.arange(H, device=images.device),
+        torch.arange(W, device=images.device),
+        indexing='ij'
+    )
+
+    freq_grid = torch.stack([Y - H // 2, X - W // 2], dim=-1).float()
+    distance = torch.norm(freq_grid, dim=-1)
+
+    max_dist = distance.max()
+    sigma_f = cutoff_ratio * max_dist
+
+    gaussian_mask = torch.exp(-(distance ** 2) / (2 * sigma_f ** 2))
+    gaussian_mask = gaussian_mask[None, None, :, :] # broadcast
+
+    filtered_fft = fft_images * gaussian_mask
+    filtered = torch.fft.ifft2(
+        torch.fft.ifftshift(filtered_fft, dim=(-2, -1)),
+        dim=(-2, -1)
+    ).real
+
+    return filtered
 
 def _clip_images(image_tensor: torch.Tensor, mean: List[float], std: List[float]) -> torch.Tensor:
     mean_arr = np.array(mean)
@@ -170,14 +200,18 @@ class SMIClasswise(BaseSynthesis):
         self.timer = _Timer()
 
     def synthesize(
-        self,
-        targets: Optional[torch.Tensor] = None,
-        num_patches: int = 197,
-        prune_it: Iterable[int] = (-1,),
-        prune_ratio: Iterable[float] = (0,),
-        use_soft_label: bool = False,
-        soft_label_alpha: float = 0.9,
-    ) -> Dict[str, torch.Tensor]:
+        self, targets=None,
+        num_patches=197, prune_it=[-1], prune_ratio=[0],
+        lpf=False, lpf_type="cufoff", lpf_every=10, cutoff_ratio=0.8,
+        use_soft_label=False, soft_label_alpha=0.9,
+        ):
+
+        # Idea 1. Low-pass Filter
+        self.lpf = lpf
+        self.lpf_type = lpf_type
+        self.lpf_every = lpf_every
+        self.cutoff_ratio = cutoff_ratio
+
         self.student.eval()
         self.teacher.eval()
         best_cost = 1e6
@@ -215,6 +249,17 @@ class SMIClasswise(BaseSynthesis):
             if it + 1 in prune_it:
                 inputs_aug = inputs
                 current_abs_index_aug = current_abs_index
+
+                if self.lpf and ((it + 1) % self.lpf_every == 0):
+                    if self.lpf_type == "gaussian":
+                        inputs_aug = Gaussian_low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    elif self.lpf_type == "cutoff":
+                        inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    elif self.lpf_type == "bilateral":
+                        inputs_aug = Bilateral_loss_pass_filter(inputs_aug, kernel_size=self.bi_kernel, sigma_s=self.bi_sigma_s, sigma_r=self.bi_sigma_r)
+                    else:
+                        raise ValueError("Invalid lpf_type")
+
                 t_out, attention_weights, _ = self.teacher(inputs_aug, current_abs_index_aug, next_relative_index)
             elif it in prune_it:
                 attention_weights = torch.mean(attention_weights[-1], dim=1)[:, 0, :][:, 1:]
@@ -225,6 +270,17 @@ class SMIClasswise(BaseSynthesis):
                 )
                 inputs_aug = inputs
                 current_abs_index_aug = current_abs_index
+
+                if self.lpf and ((it + 1) % self.lpf_every == 0):
+                    if self.lpf_type == "gaussian":
+                        inputs_aug = Gaussian_low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    elif self.lpf_type == "cutoff":
+                        inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    elif self.lpf_type == "bilateral":
+                        inputs_aug = Bilateral_loss_pass_filter(inputs_aug, kernel_size=self.bi_kernel, sigma_s=self.bi_sigma_s, sigma_r=self.bi_sigma_r)
+                    else:
+                        raise ValueError("Invalid lpf_type")
+
                 t_out, attention_weights, current_abs_index = self.teacher(inputs_aug, current_abs_index_aug, next_relative_index)
             else:
                 inputs_aug, off1, off2, flip = _jitter_and_flip(inputs)
@@ -234,6 +290,17 @@ class SMIClasswise(BaseSynthesis):
                     current_abs_index_aug = _jitter_and_flip_index(
                         current_abs_index, off1, off2, flip, self.patch_size, int(224 // self.patch_size)
                     )
+                
+                if self.lpf and ((it + 1) % self.lpf_every == 0):
+                    if self.lpf_type == "gaussian":
+                        inputs_aug = Gaussian_low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    elif self.lpf_type == "cutoff":
+                        inputs_aug = low_pass_filter(inputs_aug, cutoff_ratio=self.cutoff_ratio)
+                    elif self.lpf_type == "bilateral":
+                        inputs_aug = Bilateral_loss_pass_filter(inputs_aug, kernel_size=self.bi_kernel, sigma_s=self.bi_sigma_s, sigma_r=self.bi_sigma_r)
+                    else:
+                        raise ValueError("Invalid lpf_type")
+                
                 t_out, attention_weights, _ = self.teacher(inputs_aug, current_abs_index_aug, next_relative_index)
             if self.bn != 0:
                 _ = self.prior(inputs_aug)

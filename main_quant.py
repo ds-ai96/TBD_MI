@@ -597,7 +597,8 @@ def main():
             start = time.time()
             results = synthesizer.synthesize(
                 num_patches=patch_num, prune_it=prune_it, prune_ratio=prune_ratio,
-                lpf=args.lpf, lpf_every=args.lpf_every, cutoff_ratio=args.cutoff_ratio,
+                lpf=args.lpf, lpf_type=args.lpf_type, lpf_every=args.lpf_every, cutoff_ratio=args.cutoff_ratio,
+                bi_kernel=args.bi_kernel, bi_sigma_s=args.bi_sigma_s, bi_sigma_r=args.bi_sigma_r,
                 scale_edge=args.scale_edge,
                 sc_center=args.sc_center, sc_every=args.sc_every, sc_center_lambda=args.sc_center_lambda,
                 saliency_anchor=args.saliency_anchor,
