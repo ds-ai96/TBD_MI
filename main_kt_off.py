@@ -4,7 +4,6 @@ import time
 import os
 import sys
 import random
-from tqdm import tqdm
 
 import numpy as np
 import wandb
@@ -31,11 +30,6 @@ def get_args_parser():
         )
 
     # Experiments
-    parser.add_argument(
-        "--eval_teacher",
-        action="store_true",
-        help="only evaluate the teacher model on the validation set"
-    )
     parser.add_argument(
         "--mode",
         type=str, 
@@ -89,6 +83,18 @@ def get_args_parser():
         type=int, 
         help="number of epoches for knowledge transfer"
         )
+    parser.add_argument(
+        "--synthetic_bs",
+        default=128,
+        type=int,
+        help="batch size of synthetic datasets"
+    )
+    parser.add_argument(
+        "--total_images",
+        default=128,
+        type=int,
+        help="number of total images"
+    )
 
     # Data Generation
     parser.add_argument(
@@ -246,11 +252,11 @@ def main():
     # Set WandB
     if args.wandb:
         if args.mode == "SMI":
-            run_name = f"{args.mode}-{args.model}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}" 
+            run_name = f"{args.mode}-{args.model}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}-{args.total_images}" 
         elif args.mode == "DMI":
-            run_name = f"{args.mode}-{args.model}-{args.seed}" 
+            run_name = f"{args.mode}-{args.model}-{args.seed}-{args.total_images}" 
         elif args.mode == "TBD_MI":
-            run_name = f"{args.mode}-{args.model}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}" 
+            run_name = f"{args.mode}-{args.model}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}-{args.total_images}" 
             if args.lpf:
                 run_name += f"-LPF{args.lpf_every}/{args.cutoff_ratio}"
             if args.sc_center:
@@ -289,56 +295,6 @@ def main():
         train_aug=True, keep_zero=True, train_inverse=True, dataset_path=args.dataset
     )
 
-    # --- Teacher-only evaluation ---
-    if args.eval_teacher:
-        teacher.eval()
-        criterion = nn.CrossEntropyLoss().to(device)
-
-        # ViT patch setting (네 코드 기준)
-        patch_size = 16 if '16' in args.model else 32
-        patch_num  = 197 if patch_size == 16 else 50  # cls 포함
-
-        losses = AverageMeter()
-        top1   = AverageMeter()
-        top5   = AverageMeter()
-
-        val_start_time = time.time()
-
-        loader = val_loader
-
-        pbar = tqdm(loader, desc="Validation", leave=False)
-
-        for i, (data, target) in enumerate(pbar):
-            data = data.to(device, non_blocking=True)
-            target = target.to(device, non_blocking=True)
-
-            with torch.no_grad():
-                full_index = torch.arange(patch_num, device=device).repeat(data.size(0), 1)
-
-                output = teacher(
-                    data,
-                    current_abs_index=full_index,
-                    next_relative_index=full_index,
-                )
-
-                # teacher가 (logits, ...) 형태면 logits만 사용
-                if isinstance(output, (tuple, list)):
-                    output = output[0]
-
-                loss = criterion(output, target)
-
-                prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-
-            losses.update(loss.item(), data.size(0))
-            top1.update(prec1.item(), data.size(0))
-            top5.update(prec5.item(), data.size(0))
-
-        elapsed = time.time() - val_start_time
-        print(" * [Teacher Eval] Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Loss {loss.avg:.4f} Time {time:.3f}".format(
-            top1=top1, top5=top5, loss=losses, time=elapsed
-        ))
-        return
-
     #########################################################
     #################### Model Inversion ####################
     #########################################################
@@ -374,7 +330,7 @@ def main():
         synthesizer = SMI(
             teacher=teacher, teacher_name=args.model, student=model, num_classes=num_classes,
             img_shape=(3, 224, 224), iterations=iterations, patch_size=patch_size, lr_g=lr_g,
-            synthesis_batch_size=100, sample_batch_size=args.kr_batchsize,
+            synthesis_batch_size=args.synthetic_bs, sample_batch_size=args.kr_batchsize,
             adv=adv, bn=bn, oh=oh, tv1=tv1, tv2=tv2, l2=l2,
             save_dir=datapool_path, transform=train_transform,
             normalizer=normalizer, device=device, bnsource='resnet50v1', init_dataset=None
@@ -403,26 +359,34 @@ def main():
     optimizer_kd = torch.optim.SGD(model.parameters(), 0.1, weight_decay=1e-4, momentum=0.9)
     best_top1=0
 
-    for epoch in range(args.epoches):
-        print("Generating data...")
-        _ = synthesizer.synthesize(
-            num_patches=patch_num, prune_it=prune_it, prune_ratio=prune_ratio
-        )
-        calibrate_data = synthesizer.sample()
-        calibrate_data = calibrate_data.to(device)
-        
-        print("Fine-tuning and Knowledge transfer with generated data...")
-        next_relative_index = torch.cat([
-            torch.zeros(calibrate_data.shape[0], 1, dtype=torch.long).to(calibrate_data.device),
-            find_non_zero_patches(images=calibrate_data,patch_size=patch_size)
-        ], dim=1)
+    # OFFLINE KT
 
-        with torch.no_grad():
-            output_t = teacher(
-                calibrate_data,
-                current_abs_index=torch.arange(patch_num).repeat(calibrate_data.shape[0], 1).to(calibrate_data.device),
-                next_relative_index=next_relative_index
-            )
+    n_calls = (args.total_images + args.synthetic_bs - 1) // args.synthetic_bs
+
+    print("Generating data...")
+    for _ in range(n_calls):
+        synthesizer.synthesize(num_patches=patch_num, prune_it=prune_it, prune_ratio=prune_ratio,
+                            use_soft_label=args.use_soft_label, soft_label_alpha=args.soft_label_alpha)
+    # _ = synthesizer.synthesize(
+    #     num_patches=patch_num, prune_it=prune_it, prune_ratio=prune_ratio
+    # )
+    calibrate_data = synthesizer.sample()
+    calibrate_data = calibrate_data.to(device)
+    
+    print("Fine-tuning and Knowledge transfer with generated data...")
+    next_relative_index = torch.cat([
+        torch.zeros(calibrate_data.shape[0], 1, dtype=torch.long).to(calibrate_data.device),
+        find_non_zero_patches(images=calibrate_data,patch_size=patch_size)
+    ], dim=1)
+
+    with torch.no_grad():
+        output_t = teacher(
+            calibrate_data,
+            current_abs_index=torch.arange(patch_num).repeat(calibrate_data.shape[0], 1).to(calibrate_data.device),
+            next_relative_index=next_relative_index
+        )
+
+    for epoch in range(args.epoches):
 
         output_s = model(
             calibrate_data,

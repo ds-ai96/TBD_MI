@@ -33,6 +33,11 @@ def get_args_parser():
 
     # Experiments
     parser.add_argument(
+        "--eval_teacher",
+        action="store_true",
+        help="only evaluate the teacher model on the validation set"
+    )
+    parser.add_argument(
         "--mode",
         type=str,
         choices=["DMI", "SMI", "Gaussian", "TBD_MI"],
@@ -302,22 +307,22 @@ def main():
     if args.wandb:
         if args.mode == "SMI":
             if args.variance == -1:
-                run_name = f"{args.mode}-{args.iterations}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
+                run_name = f"{args.mode}-{args.model}-{args.iterations}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
             else:
-                run_name = f"{args.mode}-{args.iterations}-{args.variance}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
+                run_name = f"{args.mode}-{args.model}-{args.iterations}-{args.variance}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
         elif args.mode == "DMI":
             if args.variance == -1:
-                run_name = f"{args.mode}-{args.iterations}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
+                run_name = f"{args.mode}-{args.model}-{args.iterations}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
                 if args.reward_after_lpf:
                     run_name += f"-LPF_EDGE-{args.smoothness}-{args.scale_edge}"
                 if args.use_soft_label:
                     run_name += f"-SOFT_LABEL-{args.soft_label_alpha}"
             else:
-                run_name = f"{args.mode}-{args.iterations}-{args.variance}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
+                run_name = f"{args.mode}-{args.model}-{args.iterations}-{args.variance}-{args.seed}-{args.synthetic_bs*args.num_runs}-W{args.w_bit}A{args.a_bit}"
         elif args.mode == "TBD_MI":
             if args.variance == -1:
                 run_name = (
-                    f"{args.mode}-SC-{args.iterations}-"
+                    f"{args.mode}-{args.model}-SC-{args.iterations}-"
                     f"{str(args.lpf_every)}-"
                     f"{str(args.cutoff_ratio)}-"
                     f"{str(args.sc_every)}-"
@@ -334,7 +339,7 @@ def main():
                     run_name += f"-Soft-{args.soft_label_alpha}"
             else:
                 run_name = (
-                    f"{args.mode}-{args.iterations}-{args.variance}-"
+                    f"{args.mode}-{args.model}-{args.iterations}-{args.variance}-"
                     f"{str(args.lpf_every)}-"
                     f"{str(args.cutoff_ratio)}-"
                     f"{str(args.sc_every)}-"
@@ -383,6 +388,56 @@ def main():
         args.model.split("_")[0], args.model.split("_")[-1], args.calib_batchsize,
         train_aug=False, keep_zero=True, train_inverse=True, dataset_path=args.dataset
     )
+
+    # --- Teacher-only evaluation ---
+    if args.eval_teacher:
+        teacher.eval()
+        criterion = nn.CrossEntropyLoss().to(device)
+
+        # ViT patch setting (네 코드 기준)
+        patch_size = 16 if '16' in args.model else 32
+        patch_num  = 197 if patch_size == 16 else 50  # cls 포함
+
+        losses = AverageMeter()
+        top1   = AverageMeter()
+        top5   = AverageMeter()
+
+        val_start_time = time.time()
+
+        loader = val_loader
+
+        pbar = tqdm(loader, desc="Validation", leave=False)
+
+        for i, (data, target) in enumerate(pbar):
+            data = data.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
+
+            with torch.no_grad():
+                full_index = torch.arange(patch_num, device=device).repeat(data.size(0), 1)
+
+                output = teacher(
+                    data,
+                    current_abs_index=full_index,
+                    next_relative_index=full_index,
+                )
+
+                # teacher가 (logits, ...) 형태면 logits만 사용
+                if isinstance(output, (tuple, list)):
+                    output = output[0]
+
+                loss = criterion(output, target)
+
+                prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
+
+            losses.update(loss.item(), data.size(0))
+            top1.update(prec1.item(), data.size(0))
+            top5.update(prec5.item(), data.size(0))
+
+        elapsed = time.time() - val_start_time
+        print(" * [Teacher Eval] Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Loss {loss.avg:.4f} Time {time:.3f}".format(
+            top1=top1, top5=top5, loss=losses, time=elapsed
+        ))
+        return
 
     #########################################################
     # Model Inversion (Quantization)

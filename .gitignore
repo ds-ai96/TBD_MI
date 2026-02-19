@@ -5,6 +5,9 @@ dataset_quant_cnn/
 observation/
 kt_dataset/
 ipynbs/
+DFKT_save_img/
+save_img/
+save_img_hyper/
 *.pth
 *.ipynb
 

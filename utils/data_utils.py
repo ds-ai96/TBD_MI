@@ -156,7 +156,7 @@ def build_dataset(model_type,dataset_type,calib_batchsize=32,train_aug=False,kee
         val_dataset,
         batch_size=128,
         shuffle=False,
-        num_workers=4,
+        num_workers=0,
         pin_memory=True,
     )
 

@@ -187,8 +187,6 @@ def main():
         print('*******************',img_tag,'*******************')
 
 
-
-
 def validate(args, val_loader, model, criterion, device,patch_num):
     batch_time = AverageMeter()
     losses = AverageMeter()
