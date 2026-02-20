@@ -326,7 +326,7 @@ def quantize_model(model, w_bit, a_bit):
     q_model = copy.deepcopy(model)
     for attr in dir(model):
         mod = getattr(model, attr)
-        if isinstance(mod, nn.Module) and 'norn' not in attr:
+        if isinstance(mod, nn.Module) and 'norm' not in attr:
             setattr(q_model, attr, quantize_model(mod, w_bit, a_bit))
 
     return q_model
@@ -518,20 +518,23 @@ def _validate_qat(val_loader, model, criterion, device):
 def main():
     args = get_args_parser()
 
-    if args.wandb:
-        if args.mode == "DMI":
-            run_name = f"{args.mode}-{args.model}-{args.iterations}-{args.seed}-W{args.w_bit}A{args.a_bit}"
-        elif args.mode == "TBD_MI":
-            run_name = f"{args.mode}-{args.model}-{args.iterations}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}-W{args.w_bit}A{args.a_bit}"
-            if args.lpf:
-                run_name += f"-LPF{args.lpf_every}/{args.cutoff_ratio}"
-            if args.sc_center:
-                run_name += f"-SC{args.sc_every}/{args.sc_center_lambda}"
-            if args.use_soft_label:
-                run_name += f"-SL{args.soft_label_alpha}"
-        else:
-            raise NotImplementedError
+    # Build run_name (used for both wandb logging and datapool path)
+    if args.mode == "DMI":
+        run_name = f"{args.mode}-{args.model}-{args.iterations}-{args.seed}-W{args.w_bit}A{args.a_bit}"
+    elif args.mode == "TBD_MI":
+        run_name = f"{args.mode}-{args.model}-{args.iterations}-{'-'.join(map(str, args.prune_it))}-{'-'.join(map(str, args.prune_ratio))}-{args.seed}-W{args.w_bit}A{args.a_bit}"
+        if args.lpf:
+            run_name += f"-LPF{args.lpf_every}/{args.cutoff_ratio}"
+        if args.sc_center:
+            run_name += f"-SC{args.sc_every}/{args.sc_center_lambda}"
+        if args.use_soft_label:
+            run_name += f"-SL{args.soft_label_alpha}"
+    elif args.mode == "Gaussian":
+        run_name = f"{args.mode}-{args.model}-{args.seed}-W{args.w_bit}A{args.a_bit}"
+    else:
+        raise NotImplementedError
 
+    if args.wandb:
         wandb.init(
             project=args.project_name,
             name=run_name,
@@ -586,16 +589,19 @@ def main():
         raise NotImplementedError
 
     elif args.mode == "TBD_MI":
-        iterations = args.iterations
-        lr_g = 0.25
+        if model_config["dataset"] in ["cifar10", "cifar100"]:
+            iterations = args.iterations
+            lr_g = 0.05
 
-        # Hyperparameters
-        adv = 0
-        bn = 0.0
-        oh = 1
-        tv1 = 0
-        tv2 = 0.0001
-        l2 = 0
+            # Hyperparameters
+            adv = 0
+            bn = 10.0
+            oh = 1
+            tv1 = 0
+            tv2 = 2.5e-5
+            l2 = 3.0e-8
+        elif model_config["dataset"] == "imagenet":
+            raise NotImplementedError
 
         # Parameters for Sparsification
         prune_it = args.prune_it
@@ -691,23 +697,45 @@ def main():
 
 
         elif args.quant_mode == "ptq":
-            pass
-        
+            # Quantize model
+            q_model = quantize_model(model, w_bit=args.w_bit, a_bit=args.a_bit).to(device)
+
+            # Freeze BatchNorm layers (keep running stats)
+            def freeze_bn(m):
+                if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.SyncBatchNorm)):
+                    m.eval()
+            q_model.apply(freeze_bn)
+
+            # Unfreeze activation range tracking for calibration
+            unfreeze_model(q_model)
+            q_model.eval()
+
+            # Calibrate activation ranges with synthetic data
+            print(f"[PTQ] Calibrating with generated data (full pool pass)...")
+            calib_loader = DataLoader(
+                dst,
+                batch_size=effective_calib_bs,
+                shuffle=False,
+                num_workers=0,
+                pin_memory=True,
+            )
+
+            with torch.no_grad():
+                for calibrate_data in calib_loader:
+                    if isinstance(calibrate_data, (list, tuple)):
+                        calibrate_data = calibrate_data[0]
+                    calibrate_data = calibrate_data.to(device)
+                    _ = q_model(calibrate_data)
+
+            # Freeze activation ranges after calibration
+            freeze_model(q_model)
+
+            print(f"[PTQ] Calibration done.")
+
         else:
             raise NotImplementedError
 
         print(f"[Calibration] Total synthetic images in pool: {len(dst)}")
-
-        calib_loader = DataLoader(
-            dst,
-            batch_size=effective_calib_bs,
-            shuffle=False,
-            num_workers=0,
-            pin_memory=True,
-        )
-
-        # print(f"Calibrating with generated data (full pool pass)...")
-        # quantized_model = quantize_model(model, calib_loader)
 
         # Validate the quantized model
         print("Validating...")

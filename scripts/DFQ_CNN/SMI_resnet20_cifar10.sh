@@ -1,6 +1,6 @@
 gpu=$1
 
-# synthetic_bs 원래 32
+# CIFAR-10
 python main_quant_cnn.py \
     --gpu "$gpu" \
     --mode TBD_MI \
@@ -9,12 +9,10 @@ python main_quant_cnn.py \
     --project_name "TBDMI_CNN_TEST" \
     --dataset /home/jener05458/data/ \
     --datapool /home/jener05458/src/EdgeMI/TBD_MI/dataset_quant_cnn/ \
-    --iterations 4000 \
-    --synthetic_bs 32 \
-    --num_runs 10 \
-    --quant_mode "qat" \
+    --prune_ratio 0.3 0.3 0.3 0.3 \
+    --prune_it 50 100 200 300 \
+    --iterations 2000 \
+    --synthetic_bs 256 \
+    --quant_mode "ptq" \
     --w_bit 4 \
-    --a_bit 4 \
-    --temperature 4 \
-    --alpha 10 \
-    --lambda_ce 1.0 \
+    --a_bit 4
