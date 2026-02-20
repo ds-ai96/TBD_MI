@@ -1,0 +1,4 @@
+hf_ratio (ImageNet):     mean=0.0007, std=0.0012
+hf_ratio (Synthetic):    mean=0.0044, std=0.0052
+Mann–Whitney U (Synthetic vs ImageNet): U=893487.0, p=3.089e-204
+Cohen's d (Synthetic vs ImageNet): 0.9821

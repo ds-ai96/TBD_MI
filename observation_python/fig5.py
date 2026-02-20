@@ -352,22 +352,22 @@ def plot_saliency_distribution(
     
     # Plot lines
     plt.plot(bin_centers, imagenet_ratios, 'o-', color='blue', linewidth=2, 
-             markersize=6, label='ImageNet (Real)')
+             markersize=6, markerfacecolor='none', label='ImageNet')
     plt.plot(bin_centers, dmi_ratios, 's-', color='red', linewidth=2, 
-             markersize=6, label='DeepInversion (DMI)')
+             markersize=6, markerfacecolor='none', label='DeepInversion')
     plt.plot(bin_centers, smi_ratios, '^-', color='green', linewidth=2, 
-             markersize=6, label='Sparse Model Inversion (SMI)')
+             markersize=6, markerfacecolor='none', label='SMI')
     
-    plt.xlabel('Saliency Weight (Normalized 0-1)', fontsize=12)
-    plt.ylabel('Average Ratio of Patches per Image', fontsize=12)
-    plt.title('Saliency Weight Distribution: ImageNet vs. Synthetic Images', fontsize=14)
-    plt.legend(loc='best', fontsize=11)
-    plt.grid(True, alpha=0.3)
-    plt.xlim(0, 1)
+    plt.xlabel('Saliency Weight (Normalized 0-1)', fontsize=18)
+    plt.ylabel('Average Ratio of Patches per Image', fontsize=18)
+    # plt.title('Saliency Weight Distribution: ImageNet vs. Synthetic Images', fontsize=14)
+    plt.legend(loc='best', fontsize=16)
+    # plt.grid(True, alpha=0.3)
+    plt.xlim(-0.05, 1)
     plt.ylim(0, None)
     
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=600, bbox_inches='tight')
     plt.close()
     
     print(f"Saved: {output_path}")
@@ -385,9 +385,9 @@ def main():
                         help="Path to DMI images folder")
     parser.add_argument("--smi_folder", type=str, default="./observation/08_Confidence/SMI",
                         help="Path to SMI images folder")
-    parser.add_argument("--output_dir", type=str, default="./observation/00_Figures",
+    parser.add_argument("--output_dir", type=str, default="./observation_python/figures",
                         help="Output directory for figures")
-    parser.add_argument("--output_name", type=str, default="fig4b_saliency_distribution.png",
+    parser.add_argument("--output_name", type=str, default="fig5_saliency_distribution.png",
                         help="Output filename")
     parser.add_argument("--model", type=str, default="deit_base_16_imagenet",
                         help="Model name for saliency computation")
@@ -408,9 +408,9 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Plot style
-    plt.style.use("ggplot")
-    plt.rcParams["figure.figsize"] = (10, 6)
-    plt.rcParams["axes.grid"] = True
+    # plt.style.use("ggplot")
+    plt.rcParams["figure.figsize"] = (4, 3)
+    # plt.rcParams["axes.grid"] = True
     
     # Load teacher model
     print("Loading teacher model...")

@@ -264,6 +264,88 @@ def collect_hf_band_ratios(
     return np.asarray(ratios, dtype=np.float64)
 
 
+# -------------------------
+# SNR (Signal-to-Noise Ratio)
+# -------------------------
+def compute_snr(
+    image: np.ndarray,
+    *,
+    eps: float = 1e-12,
+) -> float:
+    """
+    Compute Signal-to-Noise Ratio for an image.
+    SNR = mean / std of pixel intensities.
+    """
+    image = image.astype(np.float32, copy=False)
+    # Convert to grayscale for consistent SNR computation
+    if image.ndim == 3:
+        gray = 0.299 * image[:, :, 0] + 0.587 * image[:, :, 1] + 0.114 * image[:, :, 2]
+    else:
+        gray = image
+    
+    signal = gray.mean()
+    noise = gray.std() + eps
+    return float(signal / noise)
+
+
+def compute_snr_frequency(
+    image: np.ndarray,
+    *,
+    kind: str = "power",
+    fft_norm: str | None = "ortho",
+    lf_end: int = 20,
+    size: int = 224,
+    eps: float = 1e-12,
+) -> float:
+    """
+    Compute frequency-based SNR.
+    SNR = low-frequency energy / high-frequency energy
+    Low frequency is considered as signal, high frequency as noise.
+    """
+    prof = compute_radial_spectrum(
+        image,
+        kind=kind,
+        fft_norm=fft_norm,
+        normalize="none",
+        eps=eps,
+    )
+
+    max_radius = size // 2
+    prof = prof[: max_radius + 1]
+
+    # Low frequency (signal): [0, lf_end)
+    lf = prof[:lf_end].sum()
+    # High frequency (noise): [lf_end, max_radius]
+    hf = prof[lf_end:].sum() + eps
+
+    return float(lf / hf)
+
+
+def collect_snr_values(
+    images: list[np.ndarray],
+    *,
+    snr_type: str = "frequency",  # "intensity" | "frequency"
+    kind: str = "power",
+    fft_norm: str | None = "ortho",
+    lf_end: int = 20,
+    size: int = 224,
+) -> np.ndarray:
+    if snr_type == "intensity":
+        values = [compute_snr(img) for img in images]
+    else:  # frequency
+        values = [
+            compute_snr_frequency(
+                img,
+                kind=kind,
+                fft_norm=fft_norm,
+                lf_end=lf_end,
+                size=size,
+            )
+            for img in images
+        ]
+    return np.asarray(values, dtype=np.float64)
+
+
 def cohens_d(a, b):
     a = np.asarray(a); b = np.asarray(b)
     na, nb = len(a), len(b)
@@ -284,115 +366,157 @@ def get_significance_stars(p_value):
         return "n.s."
 
 
-def plot_hf_band_ratio_boxplot_three(
+def plot_boxplot_three(
     imagenet_images,
     synthetic_images,
-    filtered_images,
+    filtered_images=None,  # Optional: None이면 ImageNet vs Synthetic만 비교
     *,
+    metric: str = "hf_ratio",  # "hf_ratio" | "snr_frequency" | "snr_intensity"
     kind: str = "amplitude",
     fft_norm: str | None = "ortho",
     hf_start: int = 80,
+    lf_end: int = 20,  # for SNR frequency
     size: int = 224,
     output_path: str | None = None,
+    box_start: float = 1.0,   # 첫 번째 boxplot의 x 위치
+    box_gap: float = 1.0,     # boxplot 간 간격
 ):
     """
-    1x3 boxplot comparing ImageNet, Synthetic(DMI), and DMI_Filtered.
-    Computes p-value between ImageNet and each of the other two groups.
+    Boxplot comparing ImageNet, Synthetic(DMI), and optionally DMI_Filtered.
+    If filtered_images is None, compares only ImageNet vs Synthetic (1x2).
+    Computes p-value between ImageNet and each of the other groups.
+    
+    metric options:
+      - "hf_ratio": High-frequency band ratio (original)
+      - "snr_frequency": Frequency-based SNR (LF/HF energy)
+      - "snr_intensity": Intensity-based SNR (mean/std)
     """
-    # --- collect ratios
-    hf_real = collect_hf_band_ratios(
-        imagenet_images,
-        kind=kind,
-        fft_norm=fft_norm,
-        hf_start=hf_start,
-        size=size,
-    )
-    hf_syn = collect_hf_band_ratios(
-        synthetic_images,
-        kind=kind,
-        fft_norm=fft_norm,
-        hf_start=hf_start,
-        size=size,
-    )
-    hf_filtered = collect_hf_band_ratios(
-        filtered_images,
-        kind=kind,
-        fft_norm=fft_norm,
-        hf_start=hf_start,
-        size=size,
-    )
+    include_filtered = filtered_images is not None and len(filtered_images) > 0
+    
+    # --- collect metric values
+    if metric == "hf_ratio":
+        vals_real = collect_hf_band_ratios(
+            imagenet_images, kind=kind, fft_norm=fft_norm, hf_start=hf_start, size=size
+        )
+        vals_syn = collect_hf_band_ratios(
+            synthetic_images, kind=kind, fft_norm=fft_norm, hf_start=hf_start, size=size
+        )
+        if include_filtered:
+            vals_filt = collect_hf_band_ratios(
+                filtered_images, kind=kind, fft_norm=fft_norm, hf_start=hf_start, size=size
+            )
+        ylabel = f"High-Frequency Ratio"
+        # title = f"High-frequency band ratio ({kind})"
+        # For HF ratio: synthetic/filtered > real
+        alternative = "greater"
+    elif metric == "snr_frequency":
+        vals_real = collect_snr_values(
+            imagenet_images, snr_type="frequency", kind=kind, fft_norm=fft_norm, lf_end=lf_end, size=size
+        )
+        vals_syn = collect_snr_values(
+            synthetic_images, snr_type="frequency", kind=kind, fft_norm=fft_norm, lf_end=lf_end, size=size
+        )
+        if include_filtered:
+            vals_filt = collect_snr_values(
+                filtered_images, snr_type="frequency", kind=kind, fft_norm=fft_norm, lf_end=lf_end, size=size
+            )
+        ylabel = f"SNR (LF/HF, lf_end={lf_end})"
+        title = f"Signal-to-Noise Ratio (frequency-based, {kind})"
+        # For SNR: real > synthetic/filtered (real images have higher SNR)
+        alternative = "less"
+    elif metric == "snr_intensity":
+        vals_real = collect_snr_values(imagenet_images, snr_type="intensity")
+        vals_syn = collect_snr_values(synthetic_images, snr_type="intensity")
+        if include_filtered:
+            vals_filt = collect_snr_values(filtered_images, snr_type="intensity")
+        ylabel = "SNR (mean/std)"
+        title = "Signal-to-Noise Ratio (intensity-based)"
+        alternative = "less"
+    else:
+        raise ValueError(f"Unknown metric: {metric}")
 
-    # --- statistics (one-sided: synthetic/filtered > real)
+    # --- statistics
     u_stat_syn, p_value_syn = mannwhitneyu(
-        hf_syn, hf_real, alternative="greater"
+        vals_syn, vals_real, alternative=alternative
     )
-    u_stat_filt, p_value_filt = mannwhitneyu(
-        hf_filtered, hf_real, alternative="greater"
-    )
+    if include_filtered:
+        u_stat_filt, p_value_filt = mannwhitneyu(
+            vals_filt, vals_real, alternative=alternative
+        )
 
-    print(f"HF ratio (ImageNet):     mean={hf_real.mean():.4f}, std={hf_real.std():.4f}")
-    print(f"HF ratio (Synthetic):    mean={hf_syn.mean():.4f}, std={hf_syn.std():.4f}")
-    print(f"HF ratio (DMI_Filtered): mean={hf_filtered.mean():.4f}, std={hf_filtered.std():.4f}")
+    print(f"{metric} (ImageNet):     mean={vals_real.mean():.4f}, std={vals_real.std():.4f}")
+    print(f"{metric} (Synthetic):    mean={vals_syn.mean():.4f}, std={vals_syn.std():.4f}")
+    if include_filtered:
+        print(f"{metric} (DMI_Filtered): mean={vals_filt.mean():.4f}, std={vals_filt.std():.4f}")
     print(f"Mann–Whitney U (Synthetic vs ImageNet): U={u_stat_syn:.1f}, p={p_value_syn:.3e}")
-    print(f"Mann–Whitney U (DMI_Filtered vs ImageNet): U={u_stat_filt:.1f}, p={p_value_filt:.3e}")
+    if include_filtered:
+        print(f"Mann–Whitney U (DMI_Filtered vs ImageNet): U={u_stat_filt:.1f}, p={p_value_filt:.3e}")
 
     # --- significance stars
     sig_syn = get_significance_stars(p_value_syn)
-    sig_filt = get_significance_stars(p_value_filt)
+    if include_filtered:
+        sig_filt = get_significance_stars(p_value_filt)
 
     # --- Cohen's d
-    d_syn = cohens_d(hf_syn, hf_real)
-    d_filt = cohens_d(hf_filtered, hf_real)
+    d_syn = cohens_d(vals_syn, vals_real)
+    if include_filtered:
+        d_filt = cohens_d(vals_filt, vals_real)
 
-    # --- plot (1x3 figure)
-    fig, ax = plt.subplots(figsize=(8, 4))
+    # --- plot
+    if include_filtered:
+        fig, ax = plt.subplots(figsize=(5, 4))
+        labels = ["ImageNet", "Synthetic", "DMI_Filtered"]
+        data = [vals_real, vals_syn, vals_filt]
+    else:
+        fig, ax = plt.subplots(figsize=(4, 4))
+        labels = ["ImageNet", "DeepInversion"]
+        data = [vals_real, vals_syn]
 
-    labels = ["ImageNet", "Synthetic", "DMI_Filtered"]
-    data = [hf_real, hf_syn, hf_filtered]
-
+    positions = [box_start + i * box_gap for i in range(len(data))]
     try:
-        bp = ax.boxplot(data, tick_labels=labels, showfliers=False)
+        bp = ax.boxplot(data, positions=positions, widths=0.6, tick_labels=labels, showfliers=False)
     except TypeError:
-        bp = ax.boxplot(data, labels=labels, showfliers=False)
+        bp = ax.boxplot(data, positions=positions, widths=0.6, labels=labels, showfliers=False)
 
-    # --- p-value annotations
-    y_max = max(hf_real.max(), hf_syn.max(), hf_filtered.max())
-    
-    # Annotation: ImageNet vs Synthetic (positions 1 and 2)
-    y_bar1 = y_max * 1.10
-    ax.plot([1, 2], [y_bar1, y_bar1], color="black", linewidth=1)
-    ax.text(
-        1.5, y_bar1 * 1.02,
-        f"{sig_syn} (p={p_value_syn:.2e}, d={d_syn:.2f})",
-        ha="center", va="bottom", fontsize=9
-    )
+    ax.set_xlim(positions[0] - 0.5, positions[-1] + 0.5)
 
-    # Annotation: ImageNet vs DMI_Filtered (positions 1 and 3)
-    y_bar2 = y_max * 1.25
-    ax.plot([1, 1], [y_bar1 * 1.02, y_bar2], color="black", linewidth=1)
-    ax.plot([1, 3], [y_bar2, y_bar2], color="black", linewidth=1)
-    ax.text(
-        2.0, y_bar2 * 1.02,
-        f"{sig_filt} (p={p_value_filt:.2e}, d={d_filt:.2f})",
-        ha="center", va="bottom", fontsize=9
-    )
-
-    ax.set_ylabel(f"HF band ratio (r ∈ [{hf_start}, {size//2}])")
-    ax.set_title("High-frequency band ratio (amplitude)")
-    ax.set_ylim(top=y_max * 1.40)
+    ax.set_ylabel(ylabel, fontsize=18)
+    ax.tick_params(axis='both', which='major', labelsize=18)
+    # ax.set_title(title)
 
     plt.tight_layout()
     if output_path is not None:
-        plt.savefig(output_path, dpi=300)
+        plt.savefig(output_path, dpi=600)
+        # Save statistics to .txt file
+        txt_path = output_path.rsplit(".", 1)[0] + ".txt"
+        with open(txt_path, "w") as f:
+            f.write(f"{metric} (ImageNet):     mean={vals_real.mean():.4f}, std={vals_real.std():.4f}\n")
+            f.write(f"{metric} (Synthetic):    mean={vals_syn.mean():.4f}, std={vals_syn.std():.4f}\n")
+            if include_filtered:
+                f.write(f"{metric} (DMI_Filtered): mean={vals_filt.mean():.4f}, std={vals_filt.std():.4f}\n")
+            f.write(f"Mann–Whitney U (Synthetic vs ImageNet): U={u_stat_syn:.1f}, p={p_value_syn:.3e}\n")
+            if include_filtered:
+                f.write(f"Mann–Whitney U (DMI_Filtered vs ImageNet): U={u_stat_filt:.1f}, p={p_value_filt:.3e}\n")
+            f.write(f"Cohen's d (Synthetic vs ImageNet): {d_syn:.4f}\n")
+            if include_filtered:
+                f.write(f"Cohen's d (DMI_Filtered vs ImageNet): {d_filt:.4f}\n")
+        print("Stats path: ", txt_path)
     plt.show()
     print("Output path: ", output_path)
+
+
+# Backward compatibility alias
+def plot_hf_band_ratio_boxplot_three(*args, **kwargs):
+    """Alias for backward compatibility. Use plot_boxplot_three instead."""
+    kwargs.setdefault("metric", "hf_ratio")
+    return plot_boxplot_three(*args, **kwargs)
 
 
 # -------------------------
 # Main
 # -------------------------
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using Device: {device}")
 
@@ -400,9 +524,9 @@ if __name__ == "__main__":
     set_seed(seed)
 
     # plot env
-    plt.style.use("ggplot")
-    plt.rcParams["figure.figsize"] = (8, 5)
-    plt.rcParams["axes.grid"] = True
+    # plt.style.use("ggplot")
+    plt.rcParams["figure.figsize"] = (3, 4)
+    # plt.rcParams["axes.grid"] = True
     print("Environment setup completed.")
 
     # 1) 이미지 리스트 로드 (중요)
@@ -437,14 +561,47 @@ if __name__ == "__main__":
     print(imagenet_images[0].shape, imagenet_images[0].dtype, imagenet_images[0].min(), imagenet_images[0].max())
 
     # 2) boxplot 실행 (1x3)
-    plot_hf_band_ratio_boxplot_three(
+    # metric = "hf_ratio"  # ["hf_ratio", "snr_frequency", "snr_intensity"]
+    # kind = "amplitude" # ["amplitude", "power"]
+    
+    plot_boxplot_three(
         imagenet_images=imagenet_images,
         synthetic_images=synthetic_images,
-        filtered_images=filtered_images,
-        kind="amplitude",
+        # filtered_images=filtered_images,
+        metric="hf_ratio",
+        kind="power",
         fft_norm="ortho",
-        hf_start=60,
+        hf_start=80,
+        lf_end=32,
         size=224,
-        output_path="./observation/I1_challenge/hf_band_ratio_boxplot_pvalue_three.png",
+        output_path=f"./observation_python/figures/fig4_a.jpg",
+        box_start=1.0,   # 첫 번째 boxplot 시작 위치 (오른쪽으로 옮기려면 값 증가)
+        box_gap=1.0,     # boxplot 사이 간격 (넓히려면 값 증가)
     )
 
+    # Hyperparameter search
+    # for metric in ["hf_ratio", "snr_frequency", "snr_intensity"]:
+    #     for kind in ["amplitude", "power"]:
+    #         if metric == "hf_ratio":
+    #             hfs = [64, 72, 80, 88]
+    #             lfs = [32]
+    #         elif metric == "snr_frequency":
+    #             hfs = [60]
+    #             lfs = [16, 20, 24, 32]
+    #         elif metric == "snr_intensity":
+    #             hfs = [88]
+    #             lfs = [32]
+    #         for hf_start in hfs:
+    #             for lf_end in lfs:           
+    #                 plot_boxplot_three(
+    #                     imagenet_images=imagenet_images,
+    #                     synthetic_images=synthetic_images,
+    #                     # filtered_images=filtered_images,
+    #                     metric=metric,
+    #                     kind=kind,
+    #                     fft_norm="ortho",
+    #                     hf_start=hf_start,
+    #                     lf_end=lf_end,
+    #                     size=224,
+    #                     output_path=f"./observation/I1_challenge/{metric}_boxplot_{kind}_{hf_start}_{lf_end}_three.png",
+    #                 )

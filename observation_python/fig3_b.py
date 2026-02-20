@@ -176,6 +176,7 @@ def compute_hf_band_ratio(
     fft_norm: str | None = "ortho",
     hf_start: int = 80,
     size: int = 224,
+    normalize: str = "none",
     eps: float = 1e-12,
 ) -> float:
     """Compute high-frequency band ratio for a single image."""
@@ -183,7 +184,7 @@ def compute_hf_band_ratio(
         image,
         kind=kind,
         fft_norm=fft_norm,
-        normalize="none",
+        normalize=normalize,
         eps=eps,
     )
 
@@ -203,6 +204,7 @@ def compute_mean_hf_ratio_for_folder(
     fft_norm: str | None = "ortho",
     hf_start: int = 80,
     size: int = 224,
+    normalize: str = "none",
 ) -> float:
     """Compute mean HF ratio for all images in a folder."""
     images = load_all_images_from_folder(folder, size=size, resize_short=256)
@@ -210,7 +212,7 @@ def compute_mean_hf_ratio_for_folder(
         return 0.0
     
     ratios = [
-        compute_hf_band_ratio(img, kind=kind, fft_norm=fft_norm, hf_start=hf_start, size=size)
+        compute_hf_band_ratio(img, kind=kind, fft_norm=fft_norm, hf_start=hf_start, size=size, normalize=normalize)
         for img in images
     ]
     return float(np.mean(ratios))
@@ -445,7 +447,9 @@ def main():
     parser.add_argument("--gpu", type=str, default="0", help="GPU to use")
     parser.add_argument("--dataset", type=str, default="/home/mjatwk/data/imagenet", help="Path to ImageNet dataset")
     parser.add_argument("--output_dir", type=str, default="./observation/00_Figures", help="Output directory for figures")
-    parser.add_argument("--hf_start", type=int, default=80, help="HF band start radius")
+    parser.add_argument("--hf_start", type=int, nargs='+', default=[80], help="HF band start radius (can specify multiple values)")
+    parser.add_argument("--kind", type=str, nargs='+', default=["amplitude"], choices=["amplitude", "power"], help="Spectrum kind (can specify multiple values)")
+    parser.add_argument("--normalize", type=str, nargs='+', default=["none"], choices=["none", "sum1"], help="Normalization method (can specify multiple values)")
     parser.add_argument("--size", type=int, default=224, help="Image size")
     parser.add_argument("--seed_start", type=int, default=1, help="Start seed (inclusive)")
     parser.add_argument("--seed_end", type=int, default=50, help="End seed (inclusive)")
@@ -478,38 +482,35 @@ def main():
     model_name = "deit_base_16_imagenet"
     seeds = list(range(args.seed_start, args.seed_end + 1))
     
-    # Cache handling
+    # Single cache file per w_bit/a_bit configuration
+    cache_suffix = f"W{args.w_bit}A{args.a_bit}"
+    if args.cache_file.endswith(".json"):
+        cache_file = args.cache_file.replace(".json", f"_{cache_suffix}.json")
+    else:
+        cache_file = f"{args.cache_file}_{cache_suffix}.json"
+    
+    # Load cache
     cache = {}
-    if os.path.exists(args.cache_file):
-        with open(args.cache_file, 'r') as f:
+    if os.path.exists(cache_file):
+        with open(cache_file, 'r') as f:
             cache = json.load(f)
+    print(f"Cache file: {cache_file}")
     
     # -------------------------
-    # Collect data for DMI
+    # Step 1: Compute accuracy for all seeds (only depends on w_bit/a_bit)
     # -------------------------
-    print("\n" + "="*60)
-    print("Processing DMI...")
-    print("="*60)
-    
-    dmi_hf_values = []
-    dmi_acc_values = []
-    
-    for seed in tqdm(seeds, desc="DMI Seeds"):
-        folder = get_dmi_folder(dmi_base, seed)
-        cache_key = f"DMI_{seed}"
+    if not args.skip_eval:
+        print("\n" + "="*60)
+        print("Step 1: Computing accuracy for all seeds...")
+        print("="*60)
         
-        if cache_key in cache and args.skip_eval:
-            hf_ratio = cache[cache_key]["hf_ratio"]
-            top1_acc = cache[cache_key]["top1_acc"]
-        else:
-            # Compute HF ratio
-            hf_ratio = compute_mean_hf_ratio_for_folder(
-                folder, kind="amplitude", fft_norm="ortho",
-                hf_start=args.hf_start, size=args.size
-            )
+        # DMI accuracy
+        print("\nProcessing DMI accuracy...")
+        for seed in tqdm(seeds, desc="DMI Accuracy"):
+            folder = get_dmi_folder(dmi_base, seed)
+            acc_key = f"DMI_{seed}_acc"
             
-            # Evaluate quantized model
-            if not args.skip_eval:
+            if acc_key not in cache:
                 top1_acc, _ = evaluate_quantized_model(
                     datapool_path=folder,
                     model_name=model_name,
@@ -518,42 +519,18 @@ def main():
                     w_bit=args.w_bit,
                     a_bit=args.a_bit,
                 )
+                cache[acc_key] = top1_acc
+                print(f"  Seed {seed}: Acc={top1_acc:.2f}%")
             else:
-                top1_acc = cache.get(cache_key, {}).get("top1_acc", 0.0)
-            
-            # Cache results
-            cache[cache_key] = {"hf_ratio": hf_ratio, "top1_acc": top1_acc}
+                print(f"  Seed {seed}: Acc={cache[acc_key]:.2f}% (cached)")
         
-        dmi_hf_values.append(hf_ratio)
-        dmi_acc_values.append(top1_acc)
-        print(f"  Seed {seed}: HF={hf_ratio:.6f}, Acc={top1_acc:.2f}%")
-    
-    # -------------------------
-    # Collect data for SMI
-    # -------------------------
-    print("\n" + "="*60)
-    print("Processing SMI...")
-    print("="*60)
-    
-    smi_hf_values = []
-    smi_acc_values = []
-    
-    for seed in tqdm(seeds, desc="SMI Seeds"):
-        folder = get_smi_folder(smi_base, seed)
-        cache_key = f"SMI_{seed}"
-        
-        if cache_key in cache and args.skip_eval:
-            hf_ratio = cache[cache_key]["hf_ratio"]
-            top1_acc = cache[cache_key]["top1_acc"]
-        else:
-            # Compute HF ratio
-            hf_ratio = compute_mean_hf_ratio_for_folder(
-                folder, kind="amplitude", fft_norm="ortho",
-                hf_start=args.hf_start, size=args.size
-            )
+        # SMI accuracy
+        print("\nProcessing SMI accuracy...")
+        for seed in tqdm(seeds, desc="SMI Accuracy"):
+            folder = get_smi_folder(smi_base, seed)
+            acc_key = f"SMI_{seed}_acc"
             
-            # Evaluate quantized model
-            if not args.skip_eval:
+            if acc_key not in cache:
                 top1_acc, _ = evaluate_quantized_model(
                     datapool_path=folder,
                     model_name=model_name,
@@ -562,51 +539,128 @@ def main():
                     w_bit=args.w_bit,
                     a_bit=args.a_bit,
                 )
+                cache[acc_key] = top1_acc
+                print(f"  Seed {seed}: Acc={top1_acc:.2f}%")
             else:
-                top1_acc = cache.get(cache_key, {}).get("top1_acc", 0.0)
-            
-            # Cache results
-            cache[cache_key] = {"hf_ratio": hf_ratio, "top1_acc": top1_acc}
+                print(f"  Seed {seed}: Acc={cache[acc_key]:.2f}% (cached)")
         
-        smi_hf_values.append(hf_ratio)
-        smi_acc_values.append(top1_acc)
-        print(f"  Seed {seed}: HF={hf_ratio:.6f}, Acc={top1_acc:.2f}%")
-    
-    # Save cache
-    os.makedirs(os.path.dirname(args.cache_file), exist_ok=True)
-    with open(args.cache_file, 'w') as f:
-        json.dump(cache, f, indent=2)
-    print(f"\nCache saved to: {args.cache_file}")
+        # Save cache after accuracy computation
+        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+        with open(cache_file, 'w') as f:
+            json.dump(cache, f, indent=2)
+        print(f"\nAccuracy cache saved to: {cache_file}")
     
     # -------------------------
-    # Create plots
+    # Step 2: Iterate over hf_start, kind, normalize combinations
     # -------------------------
-    print("\n" + "="*60)
-    print("Creating plots...")
-    print("="*60)
-    
-    # Plot 1: DMI
-    plot_hf_vs_accuracy_scatter(
-        hf_values=dmi_hf_values,
-        accuracy_values=dmi_acc_values,
-        title="DMI (DeepInversion): HF Energy vs. Quantized Model Accuracy",
-        output_path=os.path.join(args.output_dir, "fig3b_DMI.png"),
-        color="blue",
-        marker="o",
-    )
-    
-    # Plot 2: SMI
-    plot_hf_vs_accuracy_scatter(
-        hf_values=smi_hf_values,
-        accuracy_values=smi_acc_values,
-        title="SMI (Sparse Model Inversion): HF Energy vs. Quantized Model Accuracy",
-        output_path=os.path.join(args.output_dir, "fig3b_SMI.png"),
-        color="green",
-        marker="s",
-    )
+    for hf_start in args.hf_start:
+        for kind in args.kind:
+            for normalize in args.normalize:
+                print("\n" + "#"*60)
+                print(f"Processing with hf_start={hf_start}, kind={kind}, normalize={normalize}")
+                print("#"*60)
+                
+                # Create suffix for output file naming
+                plot_suffix = f"{cache_suffix}_hf{hf_start}_{kind}_{normalize}"
+                
+                # -------------------------
+                # Collect data for DMI
+                # -------------------------
+                print("\n" + "="*60)
+                print("Computing HF ratios for DMI...")
+                print("="*60)
+                
+                dmi_hf_values = []
+                dmi_acc_values = []
+                
+                for seed in tqdm(seeds, desc="DMI HF"):
+                    folder = get_dmi_folder(dmi_base, seed)
+                    hf_key = f"DMI_{seed}_hf_{hf_start}_{kind}_{normalize}"
+                    acc_key = f"DMI_{seed}_acc"
+                    
+                    # Get HF ratio (compute if not cached)
+                    if hf_key in cache:
+                        hf_ratio = cache[hf_key]
+                    else:
+                        hf_ratio = compute_mean_hf_ratio_for_folder(
+                            folder, kind=kind, fft_norm="ortho",
+                            hf_start=hf_start, size=args.size, normalize=normalize
+                        )
+                        cache[hf_key] = hf_ratio
+                    
+                    # Get accuracy (should be already cached or 0.0 if skip_eval)
+                    top1_acc = cache.get(acc_key, 0.0)
+                    
+                    dmi_hf_values.append(hf_ratio)
+                    dmi_acc_values.append(top1_acc)
+                    print(f"  Seed {seed}: HF={hf_ratio:.6f}, Acc={top1_acc:.2f}%")
+                
+                # -------------------------
+                # Collect data for SMI
+                # -------------------------
+                print("\n" + "="*60)
+                print("Computing HF ratios for SMI...")
+                print("="*60)
+                
+                smi_hf_values = []
+                smi_acc_values = []
+                
+                for seed in tqdm(seeds, desc="SMI HF"):
+                    folder = get_smi_folder(smi_base, seed)
+                    hf_key = f"SMI_{seed}_hf_{hf_start}_{kind}_{normalize}"
+                    acc_key = f"SMI_{seed}_acc"
+                    
+                    # Get HF ratio (compute if not cached)
+                    if hf_key in cache:
+                        hf_ratio = cache[hf_key]
+                    else:
+                        hf_ratio = compute_mean_hf_ratio_for_folder(
+                            folder, kind=kind, fft_norm="ortho",
+                            hf_start=hf_start, size=args.size, normalize=normalize
+                        )
+                        cache[hf_key] = hf_ratio
+                    
+                    # Get accuracy (should be already cached or 0.0 if skip_eval)
+                    top1_acc = cache.get(acc_key, 0.0)
+                    
+                    smi_hf_values.append(hf_ratio)
+                    smi_acc_values.append(top1_acc)
+                    print(f"  Seed {seed}: HF={hf_ratio:.6f}, Acc={top1_acc:.2f}%")
+                
+                # Save cache after each combination
+                with open(cache_file, 'w') as f:
+                    json.dump(cache, f, indent=2)
+                
+                # -------------------------
+                # Create plots
+                # -------------------------
+                print("\n" + "="*60)
+                print(f"Creating plots for hf_start={hf_start}, kind={kind}, normalize={normalize}...")
+                print("="*60)
+                
+                # Plot 1: DMI
+                plot_hf_vs_accuracy_scatter(
+                    hf_values=dmi_hf_values,
+                    accuracy_values=dmi_acc_values,
+                    title=f"DMI: HF vs Accuracy (hf={hf_start}, {kind}, {normalize})",
+                    output_path=os.path.join(args.output_dir, f"fig3b_DMI_{plot_suffix}.png"),
+                    color="blue",
+                    marker="o",
+                )
+                
+                # Plot 2: SMI
+                plot_hf_vs_accuracy_scatter(
+                    hf_values=smi_hf_values,
+                    accuracy_values=smi_acc_values,
+                    title=f"SMI: HF vs Accuracy (hf={hf_start}, {kind}, {normalize})",
+                    output_path=os.path.join(args.output_dir, f"fig3b_SMI_{plot_suffix}.png"),
+                    color="green",
+                    marker="s",
+                )
     
     print("\n" + "="*60)
     print("Done!")
+    print(f"Cache saved to: {cache_file}")
     print(f"Outputs saved to: {args.output_dir}")
     print("="*60)
 
