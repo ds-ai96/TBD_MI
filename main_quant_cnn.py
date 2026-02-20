@@ -230,44 +230,6 @@ def get_args_parser():
         help="anchor for saliency map centering"
     )
 
-    # SynQ QAT Hyperparameters
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=4.0,
-        help="temperature for KD loss"
-    )
-    parser.add_argument(
-        "--alpha",
-        type=float,
-        default=1.0,
-        help="alpha for KD loss (scaling factor for KL divergence)"
-    )
-    parser.add_argument(
-        "--lambda_ce",
-        type=float,
-        default=0.1,
-        help="weight for cross-entropy loss in QAT"
-    )
-    parser.add_argument(
-        "--lambda_fa",
-        type=float,
-        default=1.0,
-        help="weight for feature alignment loss in QAT"
-    )
-    parser.add_argument(
-        "--qat_epochs",
-        type=int,
-        default=100,
-        help="number of QAT epochs"
-    )
-    parser.add_argument(
-        "--qat_lr",
-        type=float,
-        default=1e-4,
-        help="learning rate for QAT"
-    )
-
     # Logging
     parser.add_argument(
         "--wandb",
@@ -331,19 +293,6 @@ def quantize_model(model, w_bit, a_bit):
 
     return q_model
 
-# TODO: 이거 왜 필요하지??
-@torch.no_grad()
-def calibrate_act_range(q_model, calib_loader, device, num_batches):
-    q_model.eval()
-    cnt = 0
-    for data, _ in calib_loader:
-        data = data.to(device, non_blocking=True)
-        _ = q_model(data)
-        cnt += 1
-        if cnt >= num_batches:
-            break
-    return cnt
-
 def freeze_model(model):
     if isinstance(model, QuantAct):
         model.fix()
@@ -370,22 +319,6 @@ def unfreeze_model(model):
 
 def channel_attention(x):
     return F.normalize(x.pow(2).mean([2, 3]).view(x.size(0), -1))
-
-
-def loss_fn_kd(output, labels, teacher_outputs, temperature, alpha, kl_loss_fn, ce_loss_fn):
-    a = F.log_softmax(output / temperature, dim=1) + 1e-7
-    b = F.softmax(teacher_outputs / temperature, dim=1)
-    c = alpha * temperature * temperature
-    loss_kl = kl_loss_fn(a, b) * c
-    loss_ce = ce_loss_fn(output, labels)
-    return loss_kl, loss_ce
-
-def compute_loss_fa(activation_student, activation_teacher, lam):
-    fa = torch.zeros(1, device=activation_student[0].device)
-    for l, lth_activation in enumerate(activation_student):
-        fa += (lth_activation - activation_teacher[l]).pow(2).mean()
-    return lam * fa
-
 
 class ActivationHooks:
     """Activation hooks for capturing intermediate activations."""
@@ -416,104 +349,6 @@ class ActivationHooks:
         for h in self.handles:
             h.remove()
         self.handles.clear()
-
-
-def qat_training(
-    q_model, teacher, train_loader, val_loader, criterion, device, epochs,
-    lr, weight_decay, temperature, alpha, lambda_ce, lambda_fa
-):
-    teacher.eval()
-    
-    # Loss functions
-    kl_loss_fn = nn.KLDivLoss(reduction='batchmean').to(device)
-    ce_loss_fn = nn.CrossEntropyLoss().to(device)
-    
-    # Optimizer
-    optimizer = torch.optim.Adam(q_model.parameters(), lr=lr, weight_decay=weight_decay)
-    
-    # Register activation hooks for feature alignment (separate instances for teacher and student)
-    teacher_hooks = ActivationHooks()
-    student_hooks = ActivationHooks()
-    teacher_hooks.register_hooks(teacher)
-    student_hooks.register_hooks(q_model)
-
-    for epoch in range(epochs):
-        if epoch < 4:
-            unfreeze_model(q_model)
-        else:
-            freeze_model(q_model)
-
-        q_model.train()
-        epoch_loss_kl, epoch_loss_ce, epoch_loss_fa = 0.0, 0.0, 0.0
-        num_batches = 0
-        for x, labels in train_loader:
-            x = x.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
-
-            teacher_hooks.clear()
-            student_hooks.clear()
-            with torch.no_grad():
-                t_logits = teacher(x)
-            s_logits = q_model(x)  # This will populate student activations
-            
-            # Compute losses
-            loss_kl, loss_ce = loss_fn_kd(
-                s_logits, labels, t_logits, temperature, alpha, kl_loss_fn, ce_loss_fn
-            )
-            loss_fa = compute_loss_fa(
-                student_hooks.activations, teacher_hooks.activations, lambda_fa
-            )
-            
-            loss = loss_kl + lambda_ce * loss_ce + loss_fa
-            
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            epoch_loss_kl += loss_kl.item()
-            epoch_loss_ce += loss_ce.item()
-            epoch_loss_fa += loss_fa.item()
-            num_batches += 1
-        
-        if num_batches > 0:
-            print(f"[QAT] Epoch {epoch+1}/{epochs} | loss_kl: {epoch_loss_kl/num_batches:.4f} | "
-                  f"loss_ce: {epoch_loss_ce/num_batches:.4f} | loss_fa: {epoch_loss_fa/num_batches:.4f}")
-        else:
-            print(f"[QAT] Warning: Epoch {epoch+1}/{epochs} has 0 batches! Check that train_loader has data.")
-        
-        # Validation every N epochs
-        if (epoch + 1) % 10 == 0:
-            q_model.eval()
-            val_loss, val_prec1, val_prec5 = _validate_qat(val_loader, q_model, criterion, device)
-            print(f"[QAT Validation] Epoch {epoch+1}/{epochs} | "
-                  f"val_loss: {val_loss:.4f} | Prec@1: {val_prec1:.2f}% | Prec@5: {val_prec5:.2f}%")
-    
-    # Cleanup hooks
-    teacher_hooks.remove_hooks()
-    student_hooks.remove_hooks()
-
-
-@torch.no_grad()
-def _validate_qat(val_loader, model, criterion, device):
-    """Internal validation function for QAT training."""
-    losses = AverageMeter()
-    top1 = AverageMeter()
-    top5 = AverageMeter()
-    
-    model.eval()
-    for data, target in val_loader:
-        data = data.to(device)
-        target = target.to(device)
-        
-        output = model(data)
-        loss = criterion(output, target)
-        
-        prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        losses.update(loss.data.item(), data.size(0))
-        top1.update(prec1.data.item(), data.size(0))
-        top5.update(prec5.data.item(), data.size(0))
-    
-    return losses.avg, top1.avg, top5.avg
 
 def main():
     args = get_args_parser()
@@ -652,48 +487,7 @@ def main():
 
         # Quantization
         if args.quant_mode == "qat":
-            # TODO: 여기에도 effective_calib_bs 인지 모르겠음
-            qat_loader = DataLoader(
-                dst,
-                batch_size=effective_calib_bs,
-                shuffle=True,
-                num_workers=0,
-                pin_memory=True,
-                drop_last=False  # Changed to False to use all available data
-            )
-
-            q_model = quantize_model(model, w_bit=args.w_bit, a_bit=args.a_bit).to(device)
-
-            def freeze_bn(m):
-                if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.SyncBatchNorm)):
-                    m.eval()
-            q_model.apply(freeze_bn)
-
-            unfreeze_model(q_model)
-            q_model.eval()
-            calib_batches = min(20, len(qat_loader))
-            if calib_batches == 0:
-                raise ValueError("Calibration loader has no batches; check dataset size and batch size.")
-            calibrate_act_range(q_model, qat_loader, device, num_batches=calib_batches)
-            
-            freeze_model(q_model)
-
-            mins, maxs = [], []
-            for m in q_model.modules():
-                if isinstance(m, QuantAct):
-                    mins.append(float(m.x_min))
-                    maxs.append(float(m.x_max))
-            print("After calib:", (min(mins), max(maxs)))
-
-            qat_training(
-                q_model=q_model, teacher=teacher,
-                train_loader=qat_loader, val_loader=val_loader,
-                criterion=criterion, device=device,
-                epochs=args.qat_epochs,
-                lr=args.qat_lr, weight_decay=0.0,
-                temperature=args.temperature, alpha=args.alpha,
-                lambda_ce=args.lambda_ce, lambda_fa=args.lambda_fa
-            )
+            raise NotImplementedError
 
 
         elif args.quant_mode == "ptq":
